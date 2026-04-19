@@ -46,6 +46,12 @@ LABEL org.opencontainers.image.source="https://github.com/TehRobot-Assistant/pat
 LABEL org.opencontainers.image.description="Release notes + CVE context for your Docker container updates"
 LABEL org.opencontainers.image.licenses="MIT"
 
+# Unraid UI hints — these make the WebUI link work on the Docker tab even
+# when a user added the image via "Add Container" (no CA template). The
+# [IP]/[PORT:8921] tokens are expanded by Unraid at render time.
+LABEL net.unraid.docker.webui="http://[IP]:[PORT:8921]"
+LABEL net.unraid.docker.icon="https://raw.githubusercontent.com/TehRobot-Assistant/patch-pulse/main/icon.png"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
       apprise \
