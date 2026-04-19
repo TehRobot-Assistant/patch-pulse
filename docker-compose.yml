@@ -1,0 +1,30 @@
+# PatchPulse — release notes + CVE context for your Docker container updates.
+#
+# Zero-config install:
+#   1. docker compose up -d
+#   2. Open http://<host>:8921 — create admin via the first-run wizard
+#
+# No YAML config file to edit. All settings live in the web UI.
+
+services:
+  patchpulse:
+    image: tehrobot/patchpulse:latest
+    container_name: patchpulse
+    ports:
+      - "8921:8921"
+    volumes:
+      # Single data volume — holds SQLite DB + Grype vulnerability cache.
+      - ./config:/config
+      # Docker socket. Read-only by default = notify + CVE scan only.
+      # If you want the "Update now" action in the UI, remove the `:ro`
+      # and set "Enable update action" in Settings.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # No CONFIG_PATH / PORT env vars here — the mount + port mapping are
+    # the single source of truth. Inside the container, /config and 8921
+    # are fixed contracts of the image.
+    #
+    # environment:
+    #   # Optional: seed the admin non-interactively (skip the web wizard)
+    #   - ADMIN_USERNAME=admin
+    #   - ADMIN_PASSWORD=changeme
+    restart: unless-stopped

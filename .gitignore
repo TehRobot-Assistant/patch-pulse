@@ -1,0 +1,19 @@
+# Build output
+/out/
+/bin/
+
+# Local dev data
+/config/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Smoke test artefacts
+/test/tmp/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

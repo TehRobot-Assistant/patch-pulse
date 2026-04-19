@@ -1,0 +1,59 @@
+{{define "settings-content"}}
+<h1>Settings</h1>
+
+{{if .Saved}}<div class="ok">Saved. Changes apply on the next poll cycle.</div>{{end}}
+
+<form method="post" action="/settings" class="stack">
+  <fieldset>
+    <legend>Polling</legend>
+    <label>
+      Poll cadence (hours)
+      <input type="number" name="poll_cadence_hours" min="1" max="168" value="{{.Settings.PollCadenceHours}}">
+      <span class="small muted">How often PatchPulse checks upstream registries for new image versions. Minimum 1, default 6.</span>
+    </label>
+  </fieldset>
+
+  <fieldset>
+    <legend>GitHub</legend>
+    <label>
+      Personal Access Token (optional)
+      <input type="password" name="github_token" value="{{.Settings.GitHubToken}}" autocomplete="off">
+      <span class="small muted">For fetching release notes. Without a token the GitHub API allows 60 req/hour; a token with <code>public_repo</code> read scope bumps it to 5000/hour.</span>
+    </label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Notifications</legend>
+    <label>
+      Apprise URLs (one per line)
+      <textarea name="apprise_urls" rows="4" placeholder="ntfys://user:token@ntfy.example/patchpulse
+discord://webhook_id/webhook_token">{{range .Settings.AppriseURLs}}{{.}}
+{{end}}</textarea>
+      <span class="small muted">110+ services supported. See the <a href="https://github.com/caronc/apprise/wiki" target="_blank" rel="noopener">Apprise URL syntax wiki</a>.</span>
+    </label>
+    <label class="checkbox">
+      <input type="checkbox" name="notify_on_new_cve" {{if .Settings.NotifyOnNewCVE}}checked{{end}}>
+      Notify when a new CVE is found in a currently-running image
+    </label>
+    <label class="checkbox">
+      <input type="checkbox" name="notify_daily_digest" {{if .Settings.NotifyDailyDigest}}checked{{end}}>
+      Send a daily digest of pending updates
+    </label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Update action</legend>
+    <label class="checkbox">
+      <input type="checkbox" name="enable_update_action" {{if .Settings.EnableUpdateAction}}checked{{end}}>
+      Enable the "Update now" button on container pages
+    </label>
+    <p class="small muted">
+      Disabled by default. When enabled, PatchPulse can pull + restart a container via <code>docker compose up -d</code> —
+      requires a read-write Docker socket (remove the <code>:ro</code> from the mount) and the stack's compose file mounted
+      into the container. You re-type the service name as a confirmation before any update fires.
+    </p>
+  </fieldset>
+
+  <button type="submit">Save settings</button>
+</form>
+{{end}}
