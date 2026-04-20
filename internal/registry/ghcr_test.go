@@ -142,6 +142,88 @@ func (g *GHCR) headManifestURL(ctx context.Context, url, token string) (string, 
 	return resp.Header.Get("Docker-Content-Digest"), resp.StatusCode, resp.Header.Get("WWW-Authenticate"), nil
 }
 
+// TestGHCR_PATRejectedFallsBackToAnonymous simulates the scenario where
+// the user's PAT has a scope that works for GitHub's REST API
+// (public_repo, for changelog fetching) but not for GHCR reads
+// (read:packages). Previously this surfaced as a hard failure — now the
+// adapter should fall back to anonymous token exchange and still resolve
+// the digest for public images.
+func TestGHCR_PATRejectedFallsBackToAnonymous(t *testing.T) {
+	const badPAT = "ghp_wrongScope"
+
+	var anonExchanged string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		anonExchanged = "anon-" + r.URL.Query().Get("scope")
+		_ = json.NewEncoder(w).Encode(map[string]string{"token": anonExchanged})
+	})
+	mux.HandleFunc("/v2/owner/repo/manifests/latest", func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		switch {
+		case auth == "Bearer "+badPAT:
+			// PAT recognised but wrong scope.
+			http.Error(w, "insufficient scope", http.StatusForbidden)
+		case auth == "":
+			w.Header().Set("WWW-Authenticate",
+				`Bearer realm="http://`+r.Host+`/token",service="ghcr.io",scope="repository:owner/repo:pull"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		case auth == "Bearer "+anonExchanged:
+			w.Header().Set("Docker-Content-Digest", "sha256:public")
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, "unknown auth", http.StatusForbidden)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	g := &GHCR{client: srv.Client(), token: badPAT}
+
+	// Step 1: PAT attempt returns 403.
+	_, status, _, err := g.headManifestURL(context.Background(), srv.URL+"/v2/owner/repo/manifests/latest", g.token)
+	if err != nil {
+		t.Fatalf("pat attempt: %v", err)
+	}
+	if status != http.StatusForbidden {
+		t.Fatalf("expected PAT attempt to get 403, got %d", status)
+	}
+
+	// Step 2: anonymous attempt gets a 401 + WWW-Authenticate.
+	_, status, wwwAuth, err := g.headManifestURL(context.Background(), srv.URL+"/v2/owner/repo/manifests/latest", "")
+	if err != nil {
+		t.Fatalf("anon attempt: %v", err)
+	}
+	if status != http.StatusUnauthorized {
+		t.Fatalf("expected anon attempt to get 401, got %d", status)
+	}
+
+	// Step 3: token exchange + retry yields 200.
+	ch, err := parseBearerChallenge(wwwAuth)
+	if err != nil {
+		t.Fatalf("parse challenge: %v", err)
+	}
+	tokResp, err := srv.Client().Get(ch.Realm + "?service=" + ch.Service + "&scope=" + ch.Scope)
+	if err != nil {
+		t.Fatalf("token fetch: %v", err)
+	}
+	var body struct {
+		Token string `json:"token"`
+	}
+	_ = json.NewDecoder(tokResp.Body).Decode(&body)
+	tokResp.Body.Close()
+
+	digest, status, _, err := g.headManifestURL(context.Background(), srv.URL+"/v2/owner/repo/manifests/latest", body.Token)
+	if err != nil {
+		t.Fatalf("anon retry: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("expected anon retry 200, got %d", status)
+	}
+	if digest != "sha256:public" {
+		t.Fatalf("digest: %q", digest)
+	}
+}
+
 func TestGHCR_ExchangeToken_RejectsNonGHCRRealm(t *testing.T) {
 	g := &GHCR{client: http.DefaultClient}
 	// A challenge pointing at an unrelated host should be refused — we
