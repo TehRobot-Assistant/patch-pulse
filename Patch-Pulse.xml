@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Patch-Pulse</Name>
+  <Repository>tehrobot/patchpulse:latest</Repository>
+  <Registry>https://hub.docker.com/r/tehrobot/patchpulse</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/TehRobot-Assistant/patch-pulse/issues</Support>
+  <Project>https://github.com/TehRobot-Assistant/patch-pulse</Project>
+  <ReadMe/>
+  <Overview>Release notes + CVE context for your Docker container updates.&#13;
+&#13;
+Features:&#13;
+- Auto-discovers every running Docker container&#13;
+- Polls Docker Hub / GHCR / Quay for new image versions&#13;
+  (default: every 6 hours)&#13;
+- Fetches release notes when a new version appears&#13;
+  (GitHub Releases → CHANGELOG.md → commit log)&#13;
+- Scans the running image for unfixed CVEs via bundled Grype&#13;
+- One-row-per-container web UI&#13;
+- Optional Update now button (docker compose pull &amp;&amp; up -d),&#13;
+  gated by a service-name confirmation&#13;
+&#13;
+First-run:&#13;
+- Open the WebUI — the wizard will ask you to create an admin&#13;
+- No YAML config files. Everything lives in the web UI.&#13;
+&#13;
+Pre-release beta — report issues on GitHub.</Overview>
+  <Category>Tools: Docker:Management</Category>
+  <WebUI>http://[IP]:[PORT:8921]/</WebUI>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/TehRobot-Assistant/patch-pulse/main/icon.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DonateText>If you like my work, please consider a donation!</DonateText>
+  <DonateLink>https://buy.stripe.com/fZe6p67wT53E6NGaEE</DonateLink>
+  <Requires/>
+  <Config Name="Port" Target="8921" Default="8921" Mode="tcp" Description="" Type="Port" Display="always" Required="true" Mask="false">8921</Config>
+  <Config Name="Config Dir" Target="/config" Default="/mnt/user/appdata/patch-pulse" Mode="rw" Description="" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/patch-pulse</Config>
+  <Config Name="Docker Socket" Target="/var/run/docker.sock" Default="/var/run/docker.sock" Mode="ro" Description="Read-only = notify + CVE scan only. Remove :ro and enable the Update action in Settings to use the 'Update now' button in the UI." Type="Path" Display="always" Required="true" Mask="false">/var/run/docker.sock</Config>
+  <Config Name="Admin Username" Target="ADMIN_USERNAME" Default="" Mode="" Description="Optional. Seed the admin username non-interactively. Leave blank to create via the first-run web wizard." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Admin Password" Target="ADMIN_PASSWORD" Default="" Mode="" Description="Optional. Seed the admin password non-interactively. Leave blank to create via the first-run web wizard (recommended)." Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <TailscaleStateDir/>
+</Container>
