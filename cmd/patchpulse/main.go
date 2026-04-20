@@ -127,7 +127,7 @@ func main() {
 	go p.Run(ctxRun)
 
 	// --- Web server -----------------------------------------------------
-	srv, err := web.NewServer(database, logger, docker)
+	srv, err := web.NewServer(database, logger, docker, p)
 	if err != nil {
 		logger.Error("init web server", "err", err)
 		os.Exit(1)

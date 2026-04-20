@@ -156,3 +156,15 @@ table.kv tr { border: 0; }
   font-size: .9rem;
 }
 .changelog pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, monospace; }
+
+/* Page header with an action button next to the h1. */
+.page-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.25rem; }
+.page-head h1 { margin: 0; }
+.page-head form.inline { margin: 0; }
+button.secondary {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: .5rem .9rem;
+}
+button.secondary:hover { border-color: var(--accent); filter: none; }

@@ -44,10 +44,36 @@ type Poller struct {
 	Logger   *slog.Logger
 	Registry *registry.Registry // required
 	Scanner  *cve.Scanner       // may be nil
+
+	// triggerCheck is a signal channel the web UI's "Force check" button
+	// writes to, causing the upstream loop to run a check immediately
+	// regardless of cadence. Buffered size 1 = multiple quick clicks just
+	// coalesce into a single extra pass.
+	triggerCheck chan struct{}
+	initOnce     sync.Once
+}
+
+// TriggerCheck signals the upstream loop to run an immediate poll pass.
+// Safe to call from any goroutine; multiple calls during one in-flight
+// pass coalesce into a single extra check.
+func (p *Poller) TriggerCheck() {
+	p.ensureChan()
+	select {
+	case p.triggerCheck <- struct{}{}:
+	default:
+		// Already a pending trigger — drop this one.
+	}
+}
+
+func (p *Poller) ensureChan() {
+	p.initOnce.Do(func() {
+		p.triggerCheck = make(chan struct{}, 1)
+	})
 }
 
 // Run starts all three loops. Blocks until ctx is cancelled.
 func (p *Poller) Run(ctx context.Context) {
+	p.ensureChan()
 	// Discovery runs first, synchronously, so the dashboard is never blank.
 	if err := p.discoverContainers(ctx); err != nil {
 		p.Logger.Warn("initial container discovery failed", "err", err)
@@ -152,12 +178,22 @@ func (p *Poller) refreshImageMeta(ctx context.Context, image, tag, imageID strin
 // --- loop 2: upstream version polling --------------------------------------
 
 func (p *Poller) upstreamLoop(ctx context.Context) {
-	// Run once ~30s after start (give discovery a moment), then every cadence.
+	// Run once ~30s after start (give discovery a moment), then every cadence
+	// — or immediately whenever someone hits "Force check" in the UI.
+	//
+	// We use time.NewTimer (not time.After) so that a trigger-fire can Stop()
+	// the pending cadence timer. Otherwise each click leaks a 6h timer until
+	// its natural expiry.
+	startTimer := time.NewTimer(30 * time.Second)
 	select {
 	case <-ctx.Done():
+		startTimer.Stop()
 		return
-	case <-time.After(30 * time.Second):
+	case <-startTimer.C:
+	case <-p.triggerCheck:
+		startTimer.Stop()
 	}
+
 	for {
 		p.checkUpstream(ctx)
 
@@ -165,10 +201,16 @@ func (p *Poller) upstreamLoop(ctx context.Context) {
 		if cadenceHours < 1 {
 			cadenceHours = 6
 		}
+		cadenceTimer := time.NewTimer(time.Duration(cadenceHours) * time.Hour)
 		select {
 		case <-ctx.Done():
+			cadenceTimer.Stop()
 			return
-		case <-time.After(time.Duration(cadenceHours) * time.Hour):
+		case <-cadenceTimer.C:
+		case <-p.triggerCheck:
+			// User asked for it — stop the pending cadence timer so it
+			// doesn't linger in the runtime's timer heap for hours.
+			cadenceTimer.Stop()
 		}
 	}
 }
@@ -218,17 +260,23 @@ type imageTag struct{ image, tag string }
 // changelog and fires a notification.
 func (p *Poller) checkOneUpstream(ctx context.Context, image, tag string, fetcher *changelog.Fetcher, notifier *notify.Client) {
 	ref := image + ":" + tag
-	// Skip registries we can't route; the adapter router handles this but
-	// we'd rather not spam the log.
+	adapter := adapterNameFor(ref)
 	info, err := p.Registry.LatestDigest(ctx, ref)
 	if err != nil {
 		if rl, isRL := registry.IsRateLimited(err); isRL {
+			until := time.Now().Add(rl.RetryAfter).Unix()
+			// Store the raw condition only — the web layer supplies the
+			// human remediation hint so there's a single source of truth.
+			p.recordRegistryState(ctx, adapter, until, "rate limited (HTTP 429)")
 			p.Logger.Warn("registry rate limited", "ref", ref, "retry_after", rl.RetryAfter)
 			return
 		}
+		p.recordRegistryState(ctx, adapter, 0, err.Error())
 		p.Logger.Warn("registry check", "ref", ref, "err", err)
 		return
 	}
+	// Success — clear any previous rate-limit/error state for this adapter.
+	p.clearRegistryState(ctx, adapter)
 	if info == nil || info.Digest == "" {
 		return
 	}
@@ -411,6 +459,46 @@ func shortDigest(d string) string {
 		return d[:12]
 	}
 	return d
+}
+
+// adapterNameFor returns the registry adapter name we'd use for this image
+// ref. Mirrors the logic in registry.For but without requiring a Registry
+// instance — used for error reporting before we know who's to blame.
+func adapterNameFor(imageRef string) string {
+	switch {
+	case strings.HasPrefix(imageRef, "ghcr.io/"):
+		return "ghcr"
+	case strings.HasPrefix(imageRef, "quay.io/"):
+		return "quay"
+	default:
+		return "dockerhub"
+	}
+}
+
+// recordRegistryState writes a rate-limit window and/or last-error row for
+// the given adapter. until=0 means "no rate limit, just an error".
+func (p *Poller) recordRegistryState(ctx context.Context, adapter string, until int64, errMsg string) {
+	now := time.Now().Unix()
+	_, err := p.DB.ExecContext(ctx, `
+		INSERT INTO registry_state (adapter, rate_limited_until, last_error, last_error_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(adapter) DO UPDATE SET
+		    rate_limited_until = excluded.rate_limited_until,
+		    last_error         = excluded.last_error,
+		    last_error_at      = excluded.last_error_at
+	`, adapter, until, errMsg, now)
+	if err != nil {
+		p.Logger.Warn("persist registry_state", "adapter", adapter, "err", err)
+	}
+}
+
+// clearRegistryState wipes the rate-limit window + error after a successful
+// call — so the dashboard banner disappears automatically.
+func (p *Poller) clearRegistryState(ctx context.Context, adapter string) {
+	_, _ = p.DB.ExecContext(ctx, `
+		UPDATE registry_state SET rate_limited_until=0, last_error=NULL, last_error_at=0
+		 WHERE adapter = ? AND (rate_limited_until != 0 OR last_error IS NOT NULL)
+	`, adapter)
 }
 
 // splitImageTag splits e.g. "nginx:1.25.0" into ("nginx", "1.25.0").

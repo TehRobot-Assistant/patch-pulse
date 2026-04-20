@@ -1,5 +1,25 @@
 {{define "dashboard-content"}}
-<h1>Containers</h1>
+<div class="page-head">
+  <h1>Containers</h1>
+  <form class="inline" method="POST" action="/check">
+    <button type="submit" class="secondary">Force check now</button>
+  </form>
+</div>
+
+{{if .FlashCheck}}
+<div class="ok">Check triggered — the upstream poll is running now. Refresh in a few seconds.</div>
+{{end}}
+
+{{range .Banners}}
+<div class="error">
+  <strong>{{if not .RateLimitedUntil.IsZero}}Rate limited by {{.Adapter}}{{else}}{{.Adapter}} error{{end}}</strong>
+  {{if not .RateLimitedUntil.IsZero}}
+    <span class="muted small">— retries after {{fmtTime .RateLimitedUntil}}</span>
+  {{end}}
+  <div class="muted small">{{.LastError}}</div>
+  <div>{{.Remediation}}</div>
+</div>
+{{end}}
 
 {{if .FirstRunHint}}
 <div class="hint">{{.FirstRunHint}}</div>

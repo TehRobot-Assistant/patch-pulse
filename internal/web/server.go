@@ -25,6 +25,7 @@ import (
 
 	"github.com/trstudios/patch-pulse/internal/auth"
 	"github.com/trstudios/patch-pulse/internal/dockercli"
+	"github.com/trstudios/patch-pulse/internal/poller"
 )
 
 //go:embed templates/*.html static/*
@@ -35,12 +36,13 @@ type Server struct {
 	DB     *sql.DB
 	Logger *slog.Logger
 	Docker *dockercli.Client
+	Poller *poller.Poller // non-nil — used by /check (Force check) handler
 
 	tpl *template.Template
 }
 
 // NewServer wires templates + helpers.
-func NewServer(db *sql.DB, logger *slog.Logger, docker *dockercli.Client) (*Server, error) {
+func NewServer(db *sql.DB, logger *slog.Logger, docker *dockercli.Client, p *poller.Poller) (*Server, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -74,7 +76,7 @@ func NewServer(db *sql.DB, logger *slog.Logger, docker *dockercli.Client) (*Serv
 	if err != nil {
 		return nil, err
 	}
-	return &Server{DB: db, Logger: logger, Docker: docker, tpl: tpl}, nil
+	return &Server{DB: db, Logger: logger, Docker: docker, Poller: p, tpl: tpl}, nil
 }
 
 // Handler returns the fully-configured http.Handler (mux + middleware).
@@ -91,6 +93,7 @@ func (s *Server) Handler() http.Handler {
 	// Authenticated routes.
 	mux.HandleFunc("GET /{$}", s.handleDashboard)
 	mux.HandleFunc("GET /container/{id}", s.handleContainerDetail)
+	mux.HandleFunc("POST /check", s.handleForceCheck)
 	mux.HandleFunc("POST /logout", s.handleLogout)
 	mux.HandleFunc("GET /settings", s.handleSettingsGet)
 	mux.HandleFunc("POST /settings", s.handleSettingsPost)

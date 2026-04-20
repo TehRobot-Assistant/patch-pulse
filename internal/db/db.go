@@ -127,6 +127,17 @@ var schema = []string{
 		scanned_at      INTEGER NOT NULL
 	)`,
 
+	// --- Rate-limit / last-error state per registry adapter. Set by the
+	// poller whenever an adapter returns 429 or fails; the dashboard uses
+	// it to show a rate-limit banner with remediation instructions
+	// (e.g. "add a GitHub PAT in Settings"). ---
+	`CREATE TABLE IF NOT EXISTS registry_state (
+		adapter          TEXT PRIMARY KEY,       -- "dockerhub" | "ghcr" | "quay"
+		rate_limited_until INTEGER NOT NULL DEFAULT 0,
+		last_error       TEXT,
+		last_error_at    INTEGER NOT NULL DEFAULT 0
+	)`,
+
 	// --- Audit log of every Update action (manual-trigger only in v0.1). ---
 	`CREATE TABLE IF NOT EXISTS actions (
 		id               INTEGER PRIMARY KEY AUTOINCREMENT,

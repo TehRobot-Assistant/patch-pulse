@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"html/template"
 	"net/http"
@@ -232,11 +233,89 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		firstRunHint = "No containers tracked yet. The first poll will populate this list within a minute — try refreshing."
 	}
 
+	// Rate-limit / last-error banners.
+	banners := s.loadRegistryBanners(r.Context())
+
+	// One-shot flash from /check redirect.
+	flashCheck := r.URL.Query().Get("checked") == "1"
+
 	s.renderPage(w, "PatchPulse — Dashboard", "dashboard-content", map[string]any{
 		"User":         user,
 		"Containers":   list,
 		"FirstRunHint": firstRunHint,
+		"Banners":      banners,
+		"FlashCheck":   flashCheck,
 	})
+}
+
+// --- /check (Force check) -------------------------------------------------
+
+// handleForceCheck signals the poller to run an upstream pass right now.
+// No CSRF token required: the session cookie is issued with SameSite=Strict
+// (see auth.SetSessionCookie), which browsers won't send on cross-site POSTs.
+// Good enough for a home-server single-user app; revisit if we add
+// multi-user write actions exposed to untrusted referrers.
+func (s *Server) handleForceCheck(w http.ResponseWriter, r *http.Request) {
+	if s.Poller != nil {
+		s.Poller.TriggerCheck()
+	}
+	http.Redirect(w, r, "/?checked=1", http.StatusSeeOther)
+}
+
+// registryBanner is a rate-limit or last-error card shown on the dashboard
+// with a remediation hint. Only loaded when the adapter actually has state
+// to surface — a clean table yields no banners.
+type registryBanner struct {
+	Adapter          string    // "dockerhub" | "ghcr" | "quay"
+	RateLimitedUntil time.Time // zero if not rate-limited
+	LastError        string
+	LastErrorAt      time.Time
+	Remediation      string // human-readable suggestion
+}
+
+func (s *Server) loadRegistryBanners(ctx context.Context) []registryBanner {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT adapter, rate_limited_until, COALESCE(last_error, ''), last_error_at
+		FROM registry_state
+		WHERE rate_limited_until > ? OR last_error IS NOT NULL`, time.Now().Unix())
+	if err != nil {
+		s.Logger.Warn("load registry banners", "err", err)
+		return nil
+	}
+	defer rows.Close()
+	var out []registryBanner
+	for rows.Next() {
+		var b registryBanner
+		var until, errAt int64
+		if err := rows.Scan(&b.Adapter, &until, &b.LastError, &errAt); err != nil {
+			continue
+		}
+		if until > 0 {
+			b.RateLimitedUntil = time.Unix(until, 0)
+		}
+		if errAt > 0 {
+			b.LastErrorAt = time.Unix(errAt, 0)
+		}
+		b.Remediation = remediationFor(b.Adapter)
+		out = append(out, b)
+	}
+	return out
+}
+
+// remediationFor returns the human-readable fix we'd show alongside a
+// rate-limit or auth error. Single source of truth for these strings; the
+// poller stores the raw condition only.
+func remediationFor(adapter string) string {
+	switch adapter {
+	case "ghcr":
+		return "Add a GitHub personal access token in Settings → \"GitHub PAT\". Any classic token with `public_repo` scope (or a fine-grained token with Contents: Read on public repos) will do."
+	case "dockerhub":
+		return "Docker Hub throttles anonymous pulls to 100 per 6 hours per IP. The next check will happen automatically once the window resets — no action needed."
+	case "quay":
+		return "Quay.io is throttling us. Retries will resume automatically; if it persists, authenticate via the registry's web UI for a higher limit."
+	default:
+		return "Upstream registry is returning errors. Retries will resume automatically."
+	}
 }
 
 // --- /container/{id} (detail) ---------------------------------------------
