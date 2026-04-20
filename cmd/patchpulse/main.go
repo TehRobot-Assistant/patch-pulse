@@ -28,9 +28,11 @@ import (
 	"time"
 
 	"github.com/trstudios/patch-pulse/internal/auth"
+	"github.com/trstudios/patch-pulse/internal/cve"
 	"github.com/trstudios/patch-pulse/internal/db"
 	"github.com/trstudios/patch-pulse/internal/dockercli"
 	"github.com/trstudios/patch-pulse/internal/poller"
+	"github.com/trstudios/patch-pulse/internal/registry"
 	"github.com/trstudios/patch-pulse/internal/web"
 )
 
@@ -93,10 +95,35 @@ func main() {
 	// --- Docker client --------------------------------------------------
 	docker := dockercli.NewClient(dockerSocket)
 
+	// --- Registry router ------------------------------------------------
+	// GitHub PAT for GHCR is optional (public images work anonymously) and
+	// is also used by the changelog fetcher for a higher API rate limit.
+	// The poller re-reads the token from DB each cycle so "paste and go"
+	// settings changes take effect without a restart.
+	ghToken, _ := db.SettingGet(ctx, database, db.KeyGitHubToken)
+	reg := registry.New(
+		registry.NewDockerHub(),
+		registry.NewGHCR(ghToken),
+		registry.NewQuay(),
+	)
+
+	// --- CVE scanner (nilable — we survive without grype) ---------------
+	scanner, scanErr := cve.NewScanner("")
+	if scanErr != nil {
+		logger.Warn("grype unavailable, CVE scanning disabled", "err", scanErr)
+		scanner = nil
+	}
+
 	// --- Poller ---------------------------------------------------------
 	ctxRun, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
-	p := &poller.Poller{DB: database, Docker: docker, Logger: logger}
+	p := &poller.Poller{
+		DB:       database,
+		Docker:   docker,
+		Logger:   logger,
+		Registry: reg,
+		Scanner:  scanner,
+	}
 	go p.Run(ctxRun)
 
 	// --- Web server -----------------------------------------------------

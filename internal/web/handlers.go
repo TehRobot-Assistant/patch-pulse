@@ -2,11 +2,13 @@ package web
 
 import (
 	"errors"
+	"html/template"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/trstudios/patch-pulse/internal/auth"
+	"github.com/trstudios/patch-pulse/internal/cve"
 	"github.com/trstudios/patch-pulse/internal/db"
 )
 
@@ -125,7 +127,13 @@ type dashboardRow struct {
 	Name           string
 	Image          string
 	Tag            string
-	CurrentDigest  string
+	CurrentDigest  string    // short form (first 12 chars after sha256:)
+	LatestDigest   string    // short form; empty if we haven't polled yet
+	LatestCheckedAt time.Time
+	Status         string    // "up-to-date" | "update" | "unknown"
+	CVECount       int       // -1 = not scanned yet
+	CriticalCVE    int
+	HighCVE        int
 	DiscoveredAt   time.Time
 	LastSeenAt     time.Time
 	ComposeProject string
@@ -135,14 +143,31 @@ type dashboardRow struct {
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 
-	// Pull the current container roster from the DB. In v0.1-rebuild the
-	// poller populates this; if the poller hasn't run yet we fall back to
-	// a live Docker list so the dashboard is useful on the very first load.
-	rows, err := s.DB.QueryContext(r.Context(),
-		`SELECT container_id, name, image, tag, COALESCE(current_digest,''),
-			COALESCE(compose_project,''), COALESCE(compose_service,''),
-			discovered_at, last_seen_at
-		FROM containers WHERE ignored = 0 ORDER BY name`)
+	// Enriched query: joins the most recent upstream digest + the Grype
+	// scan (if any) onto each container row. The upstream join uses the
+	// per-(image,tag) max(checked_at) row so we always see the newest digest
+	// the poller has observed.
+	rows, err := s.DB.QueryContext(r.Context(), `
+		SELECT c.container_id, c.name, c.image, c.tag,
+		       COALESCE(c.current_digest, ''),
+		       COALESCE(c.compose_project, ''), COALESCE(c.compose_service, ''),
+		       c.discovered_at, c.last_seen_at,
+		       COALESCE(uv.digest, ''),
+		       COALESCE(uv.checked_at, 0),
+		       cv.raw_json
+		FROM containers c
+		LEFT JOIN (
+		    SELECT image, tag, digest, checked_at
+		    FROM upstream_versions uv1
+		    WHERE checked_at = (
+		        SELECT MAX(checked_at) FROM upstream_versions uv2
+		        WHERE uv2.image = uv1.image AND uv2.tag = uv1.tag
+		    )
+		) uv ON uv.image = c.image AND uv.tag = c.tag
+		LEFT JOIN cve_results cv ON cv.image_digest = c.current_digest
+		WHERE c.ignored = 0
+		ORDER BY c.name
+	`)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
@@ -151,24 +176,60 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	var list []dashboardRow
 	for rows.Next() {
-		var r dashboardRow
-		var discUnix, seenUnix int64
-		if err := rows.Scan(&r.ContainerID, &r.Name, &r.Image, &r.Tag, &r.CurrentDigest,
-			&r.ComposeProject, &r.ComposeService, &discUnix, &seenUnix); err == nil {
-			r.DiscoveredAt = time.Unix(discUnix, 0)
-			r.LastSeenAt = time.Unix(seenUnix, 0)
-			list = append(list, r)
+		var row dashboardRow
+		var discUnix, seenUnix, checkedUnix int64
+		var cveJSON *string
+		if err := rows.Scan(
+			&row.ContainerID, &row.Name, &row.Image, &row.Tag,
+			&row.CurrentDigest, &row.ComposeProject, &row.ComposeService,
+			&discUnix, &seenUnix,
+			&row.LatestDigest, &checkedUnix, &cveJSON,
+		); err != nil {
+			continue
 		}
+		row.DiscoveredAt = time.Unix(discUnix, 0)
+		row.LastSeenAt = time.Unix(seenUnix, 0)
+		if checkedUnix > 0 {
+			row.LatestCheckedAt = time.Unix(checkedUnix, 0)
+		}
+
+		// Status: only "up-to-date" vs "update" when we have BOTH digests.
+		// Missing either side → "unknown" and the UI greys the chip.
+		switch {
+		case row.LatestDigest == "" || row.CurrentDigest == "":
+			row.Status = "unknown"
+		case row.LatestDigest == row.CurrentDigest:
+			row.Status = "up-to-date"
+		default:
+			row.Status = "update"
+		}
+
+		// Short-form digests for display.
+		row.CurrentDigest = shortDigest(row.CurrentDigest)
+		row.LatestDigest = shortDigest(row.LatestDigest)
+
+		// CVE counts — only meaningful if we've scanned this digest.
+		row.CVECount = -1
+		if cveJSON != nil && *cveJSON != "" {
+			if cves, err := cve.ParseCVEs(*cveJSON); err == nil {
+				row.CVECount = len(cves)
+				for _, c := range cves {
+					switch c.Severity {
+					case "Critical":
+						row.CriticalCVE++
+					case "High":
+						row.HighCVE++
+					}
+				}
+			}
+		}
+
+		list = append(list, row)
 	}
 
-	// Empty-state hint: has the poller actually run yet?
 	var firstRunHint string
 	if len(list) == 0 {
-		if s.Docker != nil {
-			firstRunHint = "No containers tracked yet. The first poll will populate this list within a minute — try refreshing."
-		} else {
-			firstRunHint = "Docker socket not mounted. Add /var/run/docker.sock:/var/run/docker.sock:ro to your compose file."
-		}
+		firstRunHint = "No containers tracked yet. The first poll will populate this list within a minute — try refreshing."
 	}
 
 	s.renderPage(w, "PatchPulse — Dashboard", "dashboard-content", map[string]any{
@@ -176,6 +237,119 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		"Containers":   list,
 		"FirstRunHint": firstRunHint,
 	})
+}
+
+// --- /container/{id} (detail) ---------------------------------------------
+
+type containerDetail struct {
+	ContainerID     string
+	Name            string
+	Image           string
+	Tag             string
+	CurrentDigest   string
+	LatestDigest    string
+	LatestCheckedAt time.Time
+	LastSeenAt      time.Time
+	ComposeProject  string
+	ComposeService  string
+	Status          string
+	Changelog       template.HTML // pre-sanitised by the poller
+	ChangelogSource string
+	ChangelogAt     time.Time
+	CVEs            []cve.CVE
+	CVEScannedAt    time.Time
+}
+
+func (s *Server) handleContainerDetail(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	var d containerDetail
+	var discUnix, seenUnix int64
+	var currentDigestFull string
+	err := s.DB.QueryRowContext(r.Context(), `
+		SELECT container_id, name, image, tag,
+		       COALESCE(current_digest, ''),
+		       COALESCE(compose_project, ''), COALESCE(compose_service, ''),
+		       discovered_at, last_seen_at
+		FROM containers WHERE container_id = ?`, id).Scan(
+		&d.ContainerID, &d.Name, &d.Image, &d.Tag,
+		&currentDigestFull, &d.ComposeProject, &d.ComposeService,
+		&discUnix, &seenUnix,
+	)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	d.LastSeenAt = time.Unix(seenUnix, 0)
+
+	// Latest upstream digest.
+	var latestFull string
+	var checkedUnix int64
+	_ = s.DB.QueryRowContext(r.Context(), `
+		SELECT digest, checked_at
+		FROM upstream_versions
+		WHERE image = ? AND tag = ?
+		ORDER BY checked_at DESC LIMIT 1`, d.Image, d.Tag).Scan(&latestFull, &checkedUnix)
+	if checkedUnix > 0 {
+		d.LatestCheckedAt = time.Unix(checkedUnix, 0)
+	}
+
+	switch {
+	case latestFull == "" || currentDigestFull == "":
+		d.Status = "unknown"
+	case latestFull == currentDigestFull:
+		d.Status = "up-to-date"
+	default:
+		d.Status = "update"
+	}
+	d.CurrentDigest = shortDigest(currentDigestFull)
+	d.LatestDigest = shortDigest(latestFull)
+
+	// Changelog cached by the poller (already sanitised HTML).
+	var changelogHTML, clSource string
+	var clAt int64
+	_ = s.DB.QueryRowContext(r.Context(), `
+		SELECT COALESCE(markdown,''), COALESCE(source,''), fetched_at
+		FROM changelogs WHERE image = ? AND tag = ?`, d.Image, d.Tag,
+	).Scan(&changelogHTML, &clSource, &clAt)
+	d.Changelog = template.HTML(changelogHTML)
+	d.ChangelogSource = clSource
+	if clAt > 0 {
+		d.ChangelogAt = time.Unix(clAt, 0)
+	}
+
+	// CVE list.
+	if currentDigestFull != "" {
+		var rawJSON string
+		var scanAt int64
+		err := s.DB.QueryRowContext(r.Context(),
+			`SELECT raw_json, scanned_at FROM cve_results WHERE image_digest = ?`,
+			currentDigestFull).Scan(&rawJSON, &scanAt)
+		if err == nil {
+			if cves, err := cve.ParseCVEs(rawJSON); err == nil {
+				d.CVEs = cves
+			}
+			d.CVEScannedAt = time.Unix(scanAt, 0)
+		}
+	}
+
+	s.renderPage(w, "PatchPulse — "+d.Name, "container-content", map[string]any{
+		"User":      auth.UserFromContext(r.Context()),
+		"Container": d,
+	})
+}
+
+// shortDigest trims sha256: prefix and truncates to 12 chars.
+func shortDigest(d string) string {
+	d = strings.TrimPrefix(d, "sha256:")
+	if len(d) > 12 {
+		return d[:12]
+	}
+	return d
 }
 
 // --- /settings ------------------------------------------------------------

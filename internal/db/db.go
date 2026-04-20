@@ -89,6 +89,17 @@ var schema = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_containers_image ON containers (image, tag)`,
 
+	// --- OCI image metadata per image:tag. Populated by the poller via Docker
+	// InspectImage. Used by the changelog fetcher to know which GitHub repo
+	// to query (org.opencontainers.image.source). ---
+	`CREATE TABLE IF NOT EXISTS image_meta (
+		image            TEXT NOT NULL,
+		tag              TEXT NOT NULL,
+		source_url       TEXT,                  -- org.opencontainers.image.source
+		inspected_at     INTEGER NOT NULL,
+		PRIMARY KEY (image, tag)
+	)`,
+
 	// --- Upstream versions seen per image:tag. New row when a new digest appears. ---
 	`CREATE TABLE IF NOT EXISTS upstream_versions (
 		image            TEXT NOT NULL,

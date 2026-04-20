@@ -1,14 +1,22 @@
-// Package poller runs PatchPulse's background work — container
-// discovery, upstream registry polls, changelog fetches, CVE scans.
+// Package poller runs PatchPulse's background work.
 //
-// v0.1 (minimum lovable):
-//   - Container discovery every 60s. Populates the containers table
-//     so the dashboard immediately reflects what's running on the host.
+// Three concurrent loops, all respect ctx:
 //
-// v0.2 (after dogfood validates the architecture):
-//   - Registry polling every <poll_cadence_hours> hours
-//   - Changelog fetcher when new digest detected
-//   - Grype scan when current container digest changes
+//  1. Discovery (60s)            — list running containers, upsert rows,
+//                                   capture current image digest + OCI
+//                                   labels for each unique image:tag.
+//  2. Upstream (poll_cadence_hours from settings, default 6h) — for every
+//     unique image:tag currently running, hit the correct registry
+//     adapter (Docker Hub / GHCR / Quay) to resolve the latest manifest
+//     digest, and insert a row into upstream_versions whenever we see a
+//     digest we haven't seen before. When a newly-observed upstream
+//     digest differs from what's running, fire a notification and try to
+//     fetch the changelog via GitHub.
+//  3. CVE scan (15m sweep)       — for any container whose current_digest
+//     has no cached Grype result, run a scan and cache the JSON. Skipped
+//     entirely if grype wasn't found on PATH at startup.
+//
+// Everything is idempotent on restart: the DB is the source of truth.
 package poller
 
 import (
@@ -16,29 +24,48 @@ import (
 	"database/sql"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/trstudios/patch-pulse/internal/changelog"
+	"github.com/trstudios/patch-pulse/internal/cve"
+	"github.com/trstudios/patch-pulse/internal/db"
 	"github.com/trstudios/patch-pulse/internal/dockercli"
+	"github.com/trstudios/patch-pulse/internal/notify"
+	"github.com/trstudios/patch-pulse/internal/registry"
 )
 
-// Poller is the background job coordinator.
+// Poller is the background job coordinator. Wire everything nilable at
+// construction — a missing grype binary just disables CVE scanning, a
+// missing apprise binary just disables notifications.
 type Poller struct {
-	DB     *sql.DB
-	Docker *dockercli.Client
-	Logger *slog.Logger
+	DB       *sql.DB
+	Docker   *dockercli.Client
+	Logger   *slog.Logger
+	Registry *registry.Registry // required
+	Scanner  *cve.Scanner       // may be nil
 }
 
-// Run starts the poller loop. Blocks until ctx is cancelled.
+// Run starts all three loops. Blocks until ctx is cancelled.
 func (p *Poller) Run(ctx context.Context) {
-	// Fire a discovery pass immediately so the UI isn't empty for 60s
-	// after first start.
+	// Discovery runs first, synchronously, so the dashboard is never blank.
 	if err := p.discoverContainers(ctx); err != nil {
 		p.Logger.Warn("initial container discovery failed", "err", err)
 	}
 
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() { defer wg.Done(); p.discoveryLoop(ctx) }()
+	go func() { defer wg.Done(); p.upstreamLoop(ctx) }()
+	go func() { defer wg.Done(); p.cveLoop(ctx) }()
+	wg.Wait()
+}
+
+// --- loop 1: discovery ------------------------------------------------------
+
+func (p *Poller) discoveryLoop(ctx context.Context) {
 	tick := time.NewTicker(60 * time.Second)
 	defer tick.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -52,8 +79,9 @@ func (p *Poller) Run(ctx context.Context) {
 }
 
 // discoverContainers pulls the current running-container list from Docker
-// and upserts each row into the containers table. Also bumps last_seen_at
-// so stale rows can be culled later.
+// and upserts each row into the containers table. Also fills image_meta
+// (OCI source URL) for each unique image:tag so the changelog fetcher has
+// a GitHub URL to work with.
 func (p *Poller) discoverContainers(ctx context.Context) error {
 	if p.Docker == nil {
 		return nil
@@ -63,11 +91,10 @@ func (p *Poller) discoverContainers(ctx context.Context) error {
 		return err
 	}
 	now := time.Now().Unix()
+	seen := map[string]bool{} // image:tag, so we inspect each only once per cycle
 
 	for _, c := range list {
 		image, tag := splitImageTag(c.ImageRef)
-		composeProject := c.ComposeProject
-		composeService := c.ComposeService
 
 		_, err := p.DB.ExecContext(ctx, `
 			INSERT INTO containers
@@ -82,23 +109,316 @@ func (p *Poller) discoverContainers(ctx context.Context) error {
 			    compose_project = excluded.compose_project,
 			    compose_service = excluded.compose_service,
 			    last_seen_at = excluded.last_seen_at
-		`, c.ID, c.Name, image, tag, c.ImageID, composeProject, composeService, now, now)
+		`, c.ID, c.Name, image, tag, c.ImageID, c.ComposeProject, c.ComposeService, now, now)
 		if err != nil {
 			p.Logger.Warn("upsert container", "id", c.ID, "err", err)
+			continue
 		}
+
+		// Refresh image_meta once per discovery per unique image:tag.
+		key := image + ":" + tag
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		p.refreshImageMeta(ctx, image, tag, c.ImageID)
 	}
 	return nil
+}
+
+// refreshImageMeta inspects the local image for its OCI labels. We need
+// org.opencontainers.image.source (GitHub URL) for the changelog fetcher.
+// Best-effort — if inspect fails we log and move on.
+func (p *Poller) refreshImageMeta(ctx context.Context, image, tag, imageID string) {
+	img, err := p.Docker.InspectImage(ctx, imageID)
+	if err != nil {
+		p.Logger.Debug("inspect image failed", "image", image, "tag", tag, "err", err)
+		return
+	}
+	sourceURL := img.Labels["org.opencontainers.image.source"]
+	now := time.Now().Unix()
+	_, err = p.DB.ExecContext(ctx, `
+		INSERT INTO image_meta (image, tag, source_url, inspected_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(image, tag) DO UPDATE SET
+		    source_url = excluded.source_url,
+		    inspected_at = excluded.inspected_at
+	`, image, tag, sourceURL, now)
+	if err != nil {
+		p.Logger.Warn("upsert image_meta", "image", image, "tag", tag, "err", err)
+	}
+}
+
+// --- loop 2: upstream version polling --------------------------------------
+
+func (p *Poller) upstreamLoop(ctx context.Context) {
+	// Run once ~30s after start (give discovery a moment), then every cadence.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(30 * time.Second):
+	}
+	for {
+		p.checkUpstream(ctx)
+
+		cadenceHours := db.SettingGetInt(ctx, p.DB, db.KeyPollCadenceHours, 6)
+		if cadenceHours < 1 {
+			cadenceHours = 6
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Duration(cadenceHours) * time.Hour):
+		}
+	}
+}
+
+// checkUpstream iterates every unique (image, tag) currently running, calls
+// the registry adapter, writes upstream_versions rows, and fires
+// notifications / fetches changelogs when a newly-observed digest differs
+// from what's running.
+func (p *Poller) checkUpstream(ctx context.Context) {
+	if p.Registry == nil {
+		return
+	}
+
+	rows, err := p.DB.QueryContext(ctx,
+		`SELECT DISTINCT image, tag FROM containers WHERE ignored = 0`)
+	if err != nil {
+		p.Logger.Warn("upstream list", "err", err)
+		return
+	}
+	var pairs []imageTag
+	for rows.Next() {
+		var it imageTag
+		if err := rows.Scan(&it.image, &it.tag); err == nil {
+			pairs = append(pairs, it)
+		}
+	}
+	rows.Close()
+
+	ghToken, _ := db.SettingGet(ctx, p.DB, db.KeyGitHubToken)
+	fetcher := changelog.NewFetcher(ghToken)
+	notifier := p.buildNotifier(ctx)
+
+	for _, it := range pairs {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		p.checkOneUpstream(ctx, it.image, it.tag, fetcher, notifier)
+	}
+}
+
+type imageTag struct{ image, tag string }
+
+// checkOneUpstream resolves the latest digest for image:tag, records it if
+// new, and — if it differs from the currently-running digest — fetches a
+// changelog and fires a notification.
+func (p *Poller) checkOneUpstream(ctx context.Context, image, tag string, fetcher *changelog.Fetcher, notifier *notify.Client) {
+	ref := image + ":" + tag
+	// Skip registries we can't route; the adapter router handles this but
+	// we'd rather not spam the log.
+	info, err := p.Registry.LatestDigest(ctx, ref)
+	if err != nil {
+		if rl, isRL := registry.IsRateLimited(err); isRL {
+			p.Logger.Warn("registry rate limited", "ref", ref, "retry_after", rl.RetryAfter)
+			return
+		}
+		p.Logger.Warn("registry check", "ref", ref, "err", err)
+		return
+	}
+	if info == nil || info.Digest == "" {
+		return
+	}
+	now := time.Now().Unix()
+
+	// Has this digest been seen before for image:tag? If yes, just bump checked_at.
+	var firstSeen int64
+	err = p.DB.QueryRowContext(ctx,
+		`SELECT first_seen_at FROM upstream_versions WHERE image=? AND tag=? AND digest=?`,
+		image, tag, info.Digest).Scan(&firstSeen)
+	isNew := err == sql.ErrNoRows
+	if isNew {
+		_, err = p.DB.ExecContext(ctx, `
+			INSERT INTO upstream_versions (image, tag, digest, first_seen_at, checked_at)
+			VALUES (?, ?, ?, ?, ?)`, image, tag, info.Digest, now, now)
+		if err != nil {
+			p.Logger.Warn("insert upstream_versions", "err", err)
+			return
+		}
+	} else {
+		_, _ = p.DB.ExecContext(ctx,
+			`UPDATE upstream_versions SET checked_at=? WHERE image=? AND tag=? AND digest=?`,
+			now, image, tag, info.Digest)
+	}
+
+	if !isNew {
+		return
+	}
+	// New upstream digest. Does it differ from any currently running container
+	// using image:tag? (Some rows may have null digest — Docker didn't give one.)
+	var running int
+	_ = p.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM containers WHERE image=? AND tag=? AND ignored=0
+		  AND (current_digest IS NULL OR current_digest != ?)`,
+		image, tag, info.Digest).Scan(&running)
+	if running == 0 {
+		return // we already run this digest
+	}
+
+	// There's at least one running container on an older digest — fetch a
+	// changelog and fire a notification.
+	p.fetchChangelog(ctx, image, tag, fetcher)
+	if notifier != nil && notifier.Enabled() {
+		short := shortDigest(info.Digest)
+		title := "PatchPulse: update available for " + image + ":" + tag
+		body := image + ":" + tag + "\nNew digest: " + short + "\nSource: " + info.Source
+		if err := notifier.Send(ctx, notify.LevelInfo, title, body); err != nil {
+			p.Logger.Warn("apprise notify", "err", err)
+		}
+	}
+}
+
+// fetchChangelog tries to get release notes for image:tag from GitHub. Stored
+// even if empty so we don't try again until the tag moves.
+func (p *Poller) fetchChangelog(ctx context.Context, image, tag string, fetcher *changelog.Fetcher) {
+	var sourceURL string
+	_ = p.DB.QueryRowContext(ctx,
+		`SELECT COALESCE(source_url, '') FROM image_meta WHERE image=? AND tag=?`,
+		image, tag).Scan(&sourceURL)
+	if sourceURL == "" {
+		return
+	}
+	res, err := fetcher.Fetch(ctx, sourceURL, tag)
+	if err != nil || res == nil {
+		p.Logger.Debug("changelog fetch", "image", image, "tag", tag, "err", err)
+		return
+	}
+	now := time.Now().Unix()
+	_, err = p.DB.ExecContext(ctx, `
+		INSERT INTO changelogs (image, tag, source, markdown, fetched_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(image, tag) DO UPDATE SET
+		    source = excluded.source,
+		    markdown = excluded.markdown,
+		    fetched_at = excluded.fetched_at
+	`, image, tag, res.Source, res.ContentHTML, now)
+	if err != nil {
+		p.Logger.Warn("upsert changelog", "image", image, "tag", tag, "err", err)
+	}
+}
+
+// --- loop 3: CVE scan ------------------------------------------------------
+
+func (p *Poller) cveLoop(ctx context.Context) {
+	if p.Scanner == nil {
+		p.Logger.Info("cve scanner disabled (grype not found at startup)")
+		return
+	}
+	// Run initial sweep ~60s after start.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(60 * time.Second):
+	}
+	p.scanDirty(ctx)
+	tick := time.NewTicker(15 * time.Minute)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			p.scanDirty(ctx)
+		}
+	}
+}
+
+// scanDirty runs Grype on any container whose current_digest has no cached
+// row in cve_results. Respects ctx between scans so we can stop mid-sweep.
+func (p *Poller) scanDirty(ctx context.Context) {
+	rows, err := p.DB.QueryContext(ctx, `
+		SELECT DISTINCT c.image, c.tag, c.current_digest
+		FROM containers c
+		LEFT JOIN cve_results cv ON cv.image_digest = c.current_digest
+		WHERE c.ignored = 0
+		  AND c.current_digest IS NOT NULL AND c.current_digest != ''
+		  AND cv.image_digest IS NULL
+	`)
+	if err != nil {
+		p.Logger.Warn("cve list", "err", err)
+		return
+	}
+	type target struct{ image, tag, digest string }
+	var targets []target
+	for rows.Next() {
+		var t target
+		if err := rows.Scan(&t.image, &t.tag, &t.digest); err == nil {
+			targets = append(targets, t)
+		}
+	}
+	rows.Close()
+
+	for _, t := range targets {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		ref := t.image + ":" + t.tag
+		res, err := p.Scanner.Scan(ctx, ref)
+		if err != nil {
+			p.Logger.Warn("grype scan", "ref", ref, "err", err)
+			continue
+		}
+		now := time.Now().Unix()
+		_, err = p.DB.ExecContext(ctx, `
+			INSERT INTO cve_results (image_digest, raw_json, scanned_at)
+			VALUES (?, ?, ?)
+			ON CONFLICT(image_digest) DO UPDATE SET
+			    raw_json = excluded.raw_json,
+			    scanned_at = excluded.scanned_at
+		`, t.digest, res.RawJSON, now)
+		if err != nil {
+			p.Logger.Warn("store cve_results", "digest", t.digest, "err", err)
+		}
+	}
+}
+
+// --- helpers ---------------------------------------------------------------
+
+// buildNotifier creates an Apprise client from current settings.
+// Returns nil if apprise isn't installed or no URLs are configured.
+func (p *Poller) buildNotifier(ctx context.Context) *notify.Client {
+	var urls []string
+	_ = db.SettingGetJSON(ctx, p.DB, db.KeyAppriseURLs, &urls)
+	if len(urls) == 0 {
+		return nil
+	}
+	c, err := notify.New("", urls)
+	if err != nil {
+		p.Logger.Debug("apprise disabled", "err", err)
+		return nil
+	}
+	return c
+}
+
+func shortDigest(d string) string {
+	d = strings.TrimPrefix(d, "sha256:")
+	if len(d) > 12 {
+		return d[:12]
+	}
+	return d
 }
 
 // splitImageTag splits e.g. "nginx:1.25.0" into ("nginx", "1.25.0").
 // If no tag is present, defaults to "latest".
 func splitImageTag(ref string) (string, string) {
-	// Strip any @sha256:... suffix; we care about the tag here.
 	if at := strings.Index(ref, "@"); at > 0 {
 		ref = ref[:at]
 	}
-	// Need to be careful: a registry with port has a colon too (e.g. ghcr.io:443/foo).
-	// The tag, if present, comes after the last slash + colon.
 	slash := strings.LastIndex(ref, "/")
 	tagIdx := strings.LastIndex(ref, ":")
 	if tagIdx == -1 || tagIdx < slash {

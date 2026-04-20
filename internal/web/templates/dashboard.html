@@ -8,24 +8,50 @@
 {{if not .Containers}}
 <div class="empty">No containers tracked yet.</div>
 {{else}}
-<table>
+<table class="containers">
   <thead>
     <tr>
       <th>Name</th>
       <th>Image</th>
       <th>Tag</th>
-      <th>Last seen</th>
+      <th>Status</th>
+      <th>CVEs</th>
       <th>Stack</th>
+      <th>Last seen</th>
     </tr>
   </thead>
   <tbody>
   {{range .Containers}}
     <tr>
-      <td><strong>{{.Name}}</strong></td>
+      <td><a href="/container/{{.ContainerID}}"><strong>{{.Name}}</strong></a></td>
       <td><code>{{.Image}}</code></td>
       <td>{{.Tag}}</td>
-      <td>{{agoT .LastSeenAt}}</td>
+      <td>
+        {{if eq .Status "update"}}
+          <span class="chip chip-warn">Update available</span>
+          <div class="muted small">{{.CurrentDigest}} → {{.LatestDigest}}</div>
+        {{else if eq .Status "up-to-date"}}
+          <span class="chip chip-ok">Up to date</span>
+        {{else}}
+          <span class="chip chip-muted">Unknown</span>
+          <div class="muted small">{{if .LatestCheckedAt.IsZero}}not yet checked{{else}}checked {{agoT .LatestCheckedAt}}{{end}}</div>
+        {{end}}
+      </td>
+      <td>
+        {{if lt .CVECount 0}}
+          <span class="muted">—</span>
+        {{else if eq .CVECount 0}}
+          <span class="chip chip-ok">0</span>
+        {{else if or (gt .CriticalCVE 0) (gt .HighCVE 0)}}
+          <span class="chip chip-danger">{{.CVECount}}</span>
+          {{if gt .CriticalCVE 0}}<span class="muted small">{{.CriticalCVE}} critical</span>{{end}}
+          {{if gt .HighCVE 0}}<span class="muted small">{{.HighCVE}} high</span>{{end}}
+        {{else}}
+          <span class="chip chip-muted">{{.CVECount}}</span>
+        {{end}}
+      </td>
       <td>{{if .ComposeProject}}{{.ComposeProject}}/{{.ComposeService}}{{else}}<span class="muted">docker run</span>{{end}}</td>
+      <td>{{agoT .LastSeenAt}}</td>
     </tr>
   {{end}}
   </tbody>

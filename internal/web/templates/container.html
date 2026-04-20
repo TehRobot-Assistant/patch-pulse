@@ -1,0 +1,77 @@
+{{define "container-content"}}
+{{with .Container}}
+<p><a href="/">← Dashboard</a></p>
+<h1>{{.Name}}</h1>
+<div class="muted">
+  <code>{{.Image}}:{{.Tag}}</code>
+  · {{if .ComposeProject}}{{.ComposeProject}}/{{.ComposeService}}{{else}}docker run{{end}}
+  · last seen {{agoT .LastSeenAt}}
+</div>
+
+<section class="card">
+  <h2>Version</h2>
+  <table class="kv">
+    <tr>
+      <th>Running</th>
+      <td><code>{{if .CurrentDigest}}{{.CurrentDigest}}{{else}}—{{end}}</code></td>
+    </tr>
+    <tr>
+      <th>Latest upstream</th>
+      <td>
+        <code>{{if .LatestDigest}}{{.LatestDigest}}{{else}}—{{end}}</code>
+        {{if not .LatestCheckedAt.IsZero}}<span class="muted small">checked {{agoT .LatestCheckedAt}}</span>{{end}}
+      </td>
+    </tr>
+    <tr>
+      <th>Status</th>
+      <td>
+        {{if eq .Status "update"}}
+          <span class="chip chip-warn">Update available</span>
+        {{else if eq .Status "up-to-date"}}
+          <span class="chip chip-ok">Up to date</span>
+        {{else}}
+          <span class="chip chip-muted">Unknown</span>
+        {{end}}
+      </td>
+    </tr>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Release notes</h2>
+  {{if .Changelog}}
+    <div class="changelog">{{.Changelog}}</div>
+    <p class="muted small">Source: {{.ChangelogSource}}{{if not .ChangelogAt.IsZero}} · fetched {{agoT .ChangelogAt}}{{end}}</p>
+  {{else}}
+    <p class="muted">No release notes fetched yet. The poller fetches these when it sees a new upstream digest and the image has an <code>org.opencontainers.image.source</code> label pointing at a GitHub repo.</p>
+  {{end}}
+</section>
+
+<section class="card">
+  <h2>Vulnerabilities</h2>
+  {{if .CVEScannedAt.IsZero}}
+    <p class="muted">Not scanned yet. Grype runs on a 15-minute sweep for containers whose current digest hasn't been scanned.</p>
+  {{else if not .CVEs}}
+    <p><span class="chip chip-ok">0 known CVEs</span> · scanned {{agoT .CVEScannedAt}}</p>
+  {{else}}
+    <p class="muted small">Scanned {{agoT .CVEScannedAt}} · {{len .CVEs}} total</p>
+    <table class="cves">
+      <thead><tr><th>CVE</th><th>Severity</th></tr></thead>
+      <tbody>
+      {{range .CVEs}}
+        <tr>
+          <td><code>{{.ID}}</code></td>
+          <td>
+            {{if eq .Severity "Critical"}}<span class="chip chip-danger">Critical</span>
+            {{else if eq .Severity "High"}}<span class="chip chip-warn">High</span>
+            {{else if eq .Severity "Medium"}}<span class="chip chip-muted">Medium</span>
+            {{else}}<span class="chip chip-muted">{{.Severity}}</span>{{end}}
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  {{end}}
+</section>
+{{end}}
+{{end}}

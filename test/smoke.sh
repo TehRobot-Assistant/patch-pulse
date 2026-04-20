@@ -84,6 +84,10 @@ LOC=$(curl -s -b "$COOKIE" -o /dev/null -w '%{redirect_url}' \
     "http://127.0.0.1:$PORT/settings")
 [[ "$LOC" == *"saved=1" ]] && pass "settings save → $LOC" || fail "settings save → $LOC"
 
+echo "==> 7b. /container/unknown returns 404 (detail page wired)"
+CODE=$(curl -s -b "$COOKIE" -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/container/unknown-id")
+[ "$CODE" = "404" ] && pass "/container/unknown → 404" || fail "/container/unknown → $CODE (expected 404)"
+
 echo "==> 8. Logout clears session"
 curl -s -b "$COOKIE" -c "$COOKIE" -o /dev/null -X POST "http://127.0.0.1:$PORT/logout"
 

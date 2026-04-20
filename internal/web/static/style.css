@@ -121,3 +121,38 @@ th, td { padding: .6rem .8rem; text-align: left; }
 th { background: var(--surface-2); font-weight: 600; font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 tr { border-top: 1px solid var(--border); }
 tr:first-child { border-top: 0; }
+
+/* Status chips. */
+.chip {
+  display: inline-block;
+  padding: .12rem .55rem;
+  border-radius: 999px;
+  font-size: .75rem;
+  font-weight: 600;
+  letter-spacing: .02em;
+  border: 1px solid;
+  background: var(--surface-2);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.chip-ok     { color: var(--ok);     border-color: color-mix(in srgb, var(--ok) 50%, var(--border)); background: color-mix(in srgb, var(--ok) 12%, var(--surface)); }
+.chip-warn   { color: var(--warn);   border-color: color-mix(in srgb, var(--warn) 50%, var(--border)); background: color-mix(in srgb, var(--warn) 12%, var(--surface)); }
+.chip-danger { color: var(--err);    border-color: color-mix(in srgb, var(--err) 50%, var(--border));  background: color-mix(in srgb, var(--err) 12%, var(--surface)); }
+.chip-muted  { color: var(--muted);  border-color: var(--border); }
+
+/* Detail-page key/value table. */
+table.kv { border: 0; background: transparent; }
+table.kv th { background: transparent; width: 12rem; vertical-align: top; }
+table.kv tr { border: 0; }
+
+/* Changelog body keeps its content readable but bounded. */
+.changelog {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem;
+  max-height: 30rem;
+  overflow: auto;
+  font-size: .9rem;
+}
+.changelog pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, monospace; }
