@@ -107,7 +107,10 @@ func (p *Poller) discoveryLoop(ctx context.Context) {
 // discoverContainers pulls the current running-container list from Docker
 // and upserts each row into the containers table. Also fills image_meta
 // (OCI source URL) for each unique image:tag so the changelog fetcher has
-// a GitHub URL to work with.
+// a GitHub URL to work with. Containers that used to be running but are
+// no longer in Docker's list are deleted so the dashboard shows live state
+// only — redeploys (Force Update on Unraid) would otherwise leave stale
+// rows under the same image with different container_ids forever.
 func (p *Poller) discoverContainers(ctx context.Context) error {
 	if p.Docker == nil {
 		return nil
@@ -148,6 +151,19 @@ func (p *Poller) discoverContainers(ctx context.Context) error {
 		}
 		seen[key] = true
 		p.refreshImageMeta(ctx, image, tag, c.ImageID)
+	}
+
+	// Sweep containers that weren't seen this cycle. We reach this line
+	// only after a successful ListRunning — a socket hiccup returns
+	// early above, so an empty list here genuinely means "no containers
+	// running" (user stopped their whole stack), and the sweep should
+	// run.
+	res, err := p.DB.ExecContext(ctx,
+		`DELETE FROM containers WHERE last_seen_at < ?`, now)
+	if err != nil {
+		p.Logger.Warn("sweep stale containers", "err", err)
+	} else if n, _ := res.RowsAffected(); n > 0 {
+		p.Logger.Info("swept stale containers", "count", n)
 	}
 	return nil
 }

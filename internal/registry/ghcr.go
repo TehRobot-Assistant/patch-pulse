@@ -74,11 +74,19 @@ func (g *GHCR) LatestDigest(ctx context.Context, imageRef string) (*DigestInfo, 
 			return nil, fmt.Errorf("ghcr: no digest header for %s", imageRef)
 		}
 		return &DigestInfo{Digest: digest, Tag: tag, Source: "ghcr"}, nil
-	case http.StatusUnauthorized:
+	case http.StatusUnauthorized, http.StatusForbidden:
 		// Anonymous path: parse WWW-Authenticate and do the token exchange.
+		// GHCR's edge sometimes returns 403 instead of 401 on anonymous
+		// reads (observed in the wild — probably an edge-cache quirk).
+		// Treat both as "needs a token" and let the exchange decide.
 		if g.token != "" {
-			// PAT was supplied and still got 401 — don't mask as anonymous.
-			return nil, fmt.Errorf("ghcr: authentication failed for %s (check GitHub PAT in Settings)", imageRef)
+			// PAT was supplied and still got rejected. Distinguish the
+			// codes in the message: 401 = token bad/expired, 403 = token
+			// valid but lacks scope for a private image.
+			if status == http.StatusForbidden {
+				return nil, fmt.Errorf("ghcr: private image %s — PAT accepted but lacks scope (needs read:packages)", imageRef)
+			}
+			return nil, fmt.Errorf("ghcr: authentication failed for %s (HTTP 401 — PAT bad or expired)", imageRef)
 		}
 		exchanged, err := g.exchangeToken(ctx, wwwAuth, repo)
 		if err != nil {

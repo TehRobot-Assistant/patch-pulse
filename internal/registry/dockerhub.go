@@ -69,14 +69,23 @@ func (d *DockerHub) fetchToken(ctx context.Context, repo string) (string, error)
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("auth HTTP %d", resp.StatusCode)
 	}
-	limited := io.LimitReader(resp.Body, 4096)
+	// Docker Hub tokens are JWTs and can exceed 4 KiB easily (observed
+	// ~5.5 KiB for tehrobot/patch-pulse with pull_limit parameters). A
+	// tight limit silently truncates mid-JSON and the decoder surfaces
+	// it as "unexpected EOF", which we've then misattributed as a
+	// network error. 32 KiB is generous without being unbounded.
+	limited := io.LimitReader(resp.Body, 32*1024)
 	var tok struct {
-		Token string `json:"token"`
+		Token       string `json:"token"`
+		AccessToken string `json:"access_token"`
 	}
 	if err := json.NewDecoder(limited).Decode(&tok); err != nil {
 		return "", err
 	}
-	return tok.Token, nil
+	if tok.Token != "" {
+		return tok.Token, nil
+	}
+	return tok.AccessToken, nil
 }
 
 // headManifest performs a HEAD request to get the manifest digest.
