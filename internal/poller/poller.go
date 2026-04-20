@@ -154,6 +154,8 @@ func (p *Poller) discoverContainers(ctx context.Context) error {
 
 // refreshImageMeta inspects the local image for its OCI labels. We need
 // org.opencontainers.image.source (GitHub URL) for the changelog fetcher.
+// Also records whether the image is local-only (built from a Dockerfile,
+// never pulled from a registry) so the upstream loop can skip it.
 // Best-effort — if inspect fails we log and move on.
 func (p *Poller) refreshImageMeta(ctx context.Context, image, tag, imageID string) {
 	img, err := p.Docker.InspectImage(ctx, imageID)
@@ -172,6 +174,25 @@ func (p *Poller) refreshImageMeta(ctx context.Context, image, tag, imageID strin
 	`, image, tag, sourceURL, now)
 	if err != nil {
 		p.Logger.Warn("upsert image_meta", "image", image, "tag", tag, "err", err)
+	}
+
+	// Empty RepoDigests means this image was built locally (docker build /
+	// compose build) and never pulled from a registry. Record it so the
+	// upstream loop skips it — otherwise we hit Docker Hub for
+	// "<compose-project>-<service>:latest" and pollute the error state.
+	if len(img.RepoDigests) == 0 {
+		_, err := p.DB.ExecContext(ctx, `
+			INSERT INTO local_images (image, tag, detected_at) VALUES (?, ?, ?)
+			ON CONFLICT(image, tag) DO UPDATE SET detected_at = excluded.detected_at
+		`, image, tag, now)
+		if err != nil {
+			p.Logger.Warn("upsert local_images", "image", image, "tag", tag, "err", err)
+		}
+	} else {
+		// Image has a registry digest — make sure it isn't stuck in the
+		// local-only set from a previous observation.
+		_, _ = p.DB.ExecContext(ctx,
+			`DELETE FROM local_images WHERE image=? AND tag=?`, image, tag)
 	}
 }
 
@@ -224,8 +245,14 @@ func (p *Poller) checkUpstream(ctx context.Context) {
 		return
 	}
 
-	rows, err := p.DB.QueryContext(ctx,
-		`SELECT DISTINCT image, tag FROM containers WHERE ignored = 0`)
+	rows, err := p.DB.QueryContext(ctx, `
+		SELECT DISTINCT c.image, c.tag
+		FROM containers c
+		WHERE c.ignored = 0
+		  AND NOT EXISTS (
+		      SELECT 1 FROM local_images l
+		      WHERE l.image = c.image AND l.tag = c.tag
+		  )`)
 	if err != nil {
 		p.Logger.Warn("upstream list", "err", err)
 		return

@@ -465,26 +465,57 @@ func (s *Server) loadRegistryBanners(ctx context.Context) []registryBanner {
 		if errAt > 0 {
 			b.LastErrorAt = time.Unix(errAt, 0)
 		}
-		b.Remediation = remediationFor(b.Adapter)
+		rateLimited := !b.RateLimitedUntil.IsZero()
+		b.Remediation = remediationFor(b.Adapter, b.LastError, rateLimited)
 		out = append(out, b)
 	}
 	return out
 }
 
 // remediationFor returns the human-readable fix we'd show alongside a
-// rate-limit or auth error. Single source of truth for these strings; the
-// poller stores the raw condition only.
-func remediationFor(adapter string) string {
-	switch adapter {
-	case "ghcr":
-		return "Add a GitHub personal access token in Settings → \"GitHub PAT\". Any classic token with `public_repo` scope (or a fine-grained token with Contents: Read on public repos) will do."
-	case "dockerhub":
-		return "Docker Hub throttles anonymous pulls to 100 per 6 hours per IP. The next check will happen automatically once the window resets — no action needed."
-	case "quay":
-		return "Quay.io is throttling us. Retries will resume automatically; if it persists, authenticate via the registry's web UI for a higher limit."
-	default:
-		return "Upstream registry is returning errors. Retries will resume automatically."
+// rate-limit or auth error. Keyed off the actual stored error text so a
+// transient EOF doesn't get labelled as "rate limited", and an auth failure
+// doesn't get labelled as "just wait it out".
+func remediationFor(adapter, rawErr string, rateLimited bool) string {
+	errLower := strings.ToLower(rawErr)
+
+	// Rate-limit is the clearest signal: it was stored as such by the poller.
+	if rateLimited || strings.Contains(errLower, "rate limit") || strings.Contains(errLower, "http 429") {
+		switch adapter {
+		case "dockerhub":
+			return "Docker Hub throttles anonymous pulls to 100 per 6 hours per IP. Retries resume automatically once the window resets."
+		case "ghcr":
+			return "GHCR is rate-limiting anonymous reads. Adding a GitHub PAT in Settings lifts the limit; otherwise retries resume automatically."
+		case "quay":
+			return "Quay.io is throttling us. Retries resume automatically; authenticating via the registry's web UI gives a higher limit."
+		}
+		return "Upstream registry is rate-limiting us. Retries resume automatically."
 	}
+
+	// Auth is the second clearest signal — user action is required.
+	if strings.Contains(errLower, "authentication") || strings.Contains(errLower, "unauthorized") || strings.Contains(errLower, "http 401") || strings.Contains(errLower, "http 403") || strings.Contains(errLower, "private image") {
+		switch adapter {
+		case "ghcr":
+			return "Private GHCR image or expired PAT. Add a GitHub personal access token in Settings → GitHub → Personal Access Token (classic token with `read:packages`, or fine-grained with Contents: Read)."
+		case "dockerhub":
+			return "Docker Hub returned an auth error. Check the image name is correct; private Docker Hub images need credentials (not yet supported in PatchPulse)."
+		}
+		return "Registry rejected the request as unauthorised. Check credentials in Settings."
+	}
+
+	// 404 / not found — likely a typo or a locally-tagged image Docker Hub
+	// will never see. We already skip images with no RepoDigests, so this
+	// usually means a pushed image was deleted upstream.
+	if strings.Contains(errLower, "not found") || strings.Contains(errLower, "http 404") {
+		return "Image isn't on " + adapter + " — it may have been deleted upstream, renamed, or tagged locally. Consider ignoring this container if it's a private build."
+	}
+
+	// Transient network / EOF / TLS — retry will recover.
+	if strings.Contains(errLower, "unexpected eof") || strings.Contains(errLower, "timeout") || strings.Contains(errLower, "connection reset") || strings.Contains(errLower, "no such host") || strings.Contains(errLower, "tls") {
+		return "Transient network error talking to " + adapter + ". Retries resume automatically; if it persists, check DNS / firewall from the container."
+	}
+
+	return "Upstream registry returned an error. Retries resume automatically."
 }
 
 // --- /container/{id} (detail) ---------------------------------------------

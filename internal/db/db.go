@@ -100,6 +100,17 @@ var schema = []string{
 		PRIMARY KEY (image, tag)
 	)`,
 
+	// --- Images that were built locally (no RepoDigests — never pulled from
+	// a registry). Populated at discovery. Upstream polling skips these so
+	// we don't spam Docker Hub with 404s on compose-built images like
+	// "<project>-<service>:latest". ---
+	`CREATE TABLE IF NOT EXISTS local_images (
+		image            TEXT NOT NULL,
+		tag              TEXT NOT NULL,
+		detected_at      INTEGER NOT NULL,
+		PRIMARY KEY (image, tag)
+	)`,
+
 	// --- Upstream versions seen per image:tag. New row when a new digest appears. ---
 	`CREATE TABLE IF NOT EXISTS upstream_versions (
 		image            TEXT NOT NULL,
