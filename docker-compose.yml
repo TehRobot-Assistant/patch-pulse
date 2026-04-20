@@ -8,7 +8,7 @@
 
 services:
   patchpulse:
-    image: tehrobot/patchpulse:latest
+    image: tehrobot/patch-pulse:latest
     container_name: patchpulse
     ports:
       - "8921:8921"

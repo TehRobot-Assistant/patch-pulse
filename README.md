@@ -20,7 +20,7 @@ Diun tells you a new version exists. What's Up Docker adds scheduling. Neither s
 ```yaml
 services:
   patchpulse:
-    image: tehrobot/patchpulse:latest
+    image: tehrobot/patch-pulse:latest
     container_name: patchpulse
     ports:
       - "8921:8921"
@@ -57,7 +57,7 @@ go build -o ./out/patchpulse ./cmd/patchpulse
 
 ### CI / release flow
 
-- Push to `main` → GitHub Actions builds and publishes `tehrobot/patchpulse:latest` + `ghcr.io/tehrobot-assistant/patchpulse:latest`
+- Push to `main` → GitHub Actions builds and publishes `tehrobot/patch-pulse:latest` + `ghcr.io/tehrobot-assistant/patch-pulse:latest`
 - Push a git tag `v0.2.0` → publishes `:0.2.0` + `:0.2` + `:latest`
 
 ## Licence

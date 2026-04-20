@@ -20,7 +20,7 @@ Diun tells you a new version exists. What's Up Docker adds scheduling. Neither s
 ```yaml
 services:
   patchpulse:
-    image: tehrobot/patchpulse:latest
+    image: tehrobot/patch-pulse:latest
     container_name: patchpulse
     ports:
       - "8921:8921"

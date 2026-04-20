@@ -20,7 +20,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-IMAGE="${IMAGE:-tehrobot/patchpulse:local-smoke}"
+IMAGE="${IMAGE:-tehrobot/patch-pulse:local-smoke}"
 PORT=38921
 NAME="patchpulse-smoke-$$"
 TMP=$(mktemp -d)
