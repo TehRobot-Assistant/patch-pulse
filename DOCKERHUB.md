@@ -87,4 +87,4 @@ Anonymous GitHub API: 60 req/hour. A read-only `public_repo` PAT: 5000 req/hour.
 - [GitHub](https://github.com/TehRobot-Assistant/patch-pulse)
 - [Issues](https://github.com/TehRobot-Assistant/patch-pulse/issues)
 
-MIT licence. Part of [TR Studios](https://tehrobot-servers.com) — pairs with [RestoreRunner](https://hub.docker.com/r/tehrobot/restorerunner) (backup restore rehearsal).
+MIT licence. Part of TR Studios — pairs with [RestoreRunner](https://hub.docker.com/r/tehrobot/restorerunner) (backup restore rehearsal).

@@ -62,4 +62,4 @@ go build -o ./out/patchpulse ./cmd/patchpulse
 
 ## Licence
 
-MIT. Part of [TR Studios](https://tehrobot-servers.com).
+MIT. Part of TR Studios.
