@@ -1,8 +1,8 @@
 // Package registry — Docker Hub adapter.
 //
 // Uses Docker Hub's registry API v2 with HEAD-first polling:
-//   1. HEAD /v2/<repo>/manifests/<tag> to get the digest header cheaply.
-//   2. Only fetch the full manifest if the digest has changed.
+//  1. HEAD /v2/<repo>/manifests/<tag> to get the digest header cheaply.
+//  2. Only fetch the full manifest if the digest has changed.
 //
 // 429 handling: exponential backoff with jitter, stored back-off window in the
 // caller (poller) via the RateLimitedUntil field in the versions table.

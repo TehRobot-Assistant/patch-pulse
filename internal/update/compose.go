@@ -50,10 +50,13 @@ type Result struct {
 	FinishedAt time.Time
 }
 
-// Run executes `docker compose -f <composePath> pull <service>` followed by
-// `docker compose -f <composePath> up -d <service>`.
+// Run executes `docker compose -f <composePath> pull -- <service>` followed
+// by `docker compose -f <composePath> up -d -- <service>`.
 //
-// Both commands use arg slices — no shell interpolation.
+// Both commands use arg slices — no shell interpolation — and insert the
+// GNU `--` sentinel before the service name so compose can't interpret a
+// hostile service name like `--dry-run` (which a malicious container could
+// plant via its com.docker.compose.service label) as a flag.
 func (r *Runner) Run(ctx context.Context, composePath, service string) *Result {
 	binary := r.DockerBinary
 	if binary == "" {
@@ -63,7 +66,7 @@ func (r *Runner) Run(ctx context.Context, composePath, service string) *Result {
 	var out strings.Builder
 
 	// Step 1: pull.
-	pullArgs := []string{"compose", "-f", composePath, "pull", service}
+	pullArgs := []string{"compose", "-f", composePath, "pull", "--", service}
 	pullOut, pullErr := runCmd(ctx, binary, pullArgs)
 	out.WriteString("=== docker compose pull ===\n")
 	out.WriteString(pullOut)
@@ -73,7 +76,7 @@ func (r *Runner) Run(ctx context.Context, composePath, service string) *Result {
 	}
 
 	// Step 2: up -d.
-	upArgs := []string{"compose", "-f", composePath, "up", "-d", service}
+	upArgs := []string{"compose", "-f", composePath, "up", "-d", "--", service}
 	upOut, upErr := runCmd(ctx, binary, upArgs)
 	out.WriteString("\n=== docker compose up -d ===\n")
 	out.WriteString(upOut)
@@ -83,6 +86,40 @@ func (r *Runner) Run(ctx context.Context, composePath, service string) *Result {
 	}
 
 	return &Result{Output: out.String(), FinishedAt: time.Now()}
+}
+
+// IsSafeIdentifier returns true if s is a sane docker compose project or
+// service name: non-empty, doesn't start with '-', and only contains
+// [A-Za-z0-9._-]. Used as belt-and-braces alongside the `--` sentinel in
+// Run; defence in depth against any compose version that might interpret
+// flags *after* `--` or a future docker CLI quirk.
+func IsSafeIdentifier(s string) bool {
+	if s == "" || s[0] == '-' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		ok := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-'
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// IsSafeComposePath returns true if p is usable as a `-f` argument for
+// docker compose: non-empty, doesn't start with '-', absolute path. We
+// don't test existence here — that's the caller's concern and would
+// need to happen inside the container namespace anyway.
+func IsSafeComposePath(p string) bool {
+	if p == "" || p[0] == '-' {
+		return false
+	}
+	if p[0] != '/' {
+		return false
+	}
+	return true
 }
 
 func runCmd(ctx context.Context, binary string, args []string) (string, error) {

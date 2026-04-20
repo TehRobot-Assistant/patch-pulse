@@ -52,6 +52,17 @@ discord://webhook_id/webhook_token">{{range .Settings.AppriseURLs}}{{.}}
       requires a read-write Docker socket (remove the <code>:ro</code> from the mount) and the stack's compose file mounted
       into the container. You re-type the service name as a confirmation before any update fires.
     </p>
+    <label>
+      Compose paths (one per line, <code>project=/path/to/docker-compose.yml</code>)
+      <textarea name="compose_paths" rows="4" placeholder="nextcloud=/mnt/stacks/nextcloud/docker-compose.yml
+immich=/mnt/stacks/immich/docker-compose.yml">{{range $k, $v := .Settings.ComposePaths}}{{$k}}={{$v}}
+{{end}}</textarea>
+      <span class="small muted">
+        Tell PatchPulse where each compose project's YAML lives — the <code>com.docker.compose.project</code>
+        label on the container maps to the key. Only the projects listed here will show an "Update now" button
+        on their container detail pages.
+      </span>
+    </label>
   </fieldset>
 
   <button type="submit">Save settings</button>

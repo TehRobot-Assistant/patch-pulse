@@ -27,17 +27,54 @@ RUN CGO_ENABLED=0 go build \
 FROM debian:bookworm-slim AS grype-install
 
 ARG GRYPE_VERSION=0.86.1
+# buildx sets TARGETARCH automatically — pick the right binary per platform
+# so the arm64 manifest isn't just an amd64 grype masquerading as arm.
+ARG TARGETARCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -sSfL \
-      "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_amd64.tar.gz" \
+RUN GRYPE_ARCH="${TARGETARCH:-amd64}" \
+    && curl -sSfL \
+      "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_${GRYPE_ARCH}.tar.gz" \
       -o /tmp/grype.tgz \
     && tar -xzf /tmp/grype.tgz -C /tmp \
     && install -m 0755 /tmp/grype /usr/local/bin/grype \
     && rm -rf /tmp/grype /tmp/grype.tgz
+
+# --- docker CLI + compose plugin stage ------------------------------------
+# Install the Docker CLI + compose v2 plugin as standalone binaries so the
+# runtime image doesn't pull in containerd, runc, iptables, and ~250 MB of
+# other dependencies from the `docker.io` Debian package — we only need the
+# client to talk to the host's daemon via the mounted socket.
+FROM debian:bookworm-slim AS docker-install
+
+ARG DOCKER_VERSION=27.3.1
+ARG COMPOSE_VERSION=2.29.7
+ARG TARGETARCH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && case "${TARGETARCH:-amd64}" in \
+        amd64) DOCKER_ARCH=x86_64;  COMPOSE_ARCH=x86_64  ;; \
+        arm64) DOCKER_ARCH=aarch64; COMPOSE_ARCH=aarch64 ;; \
+        *)     DOCKER_ARCH=x86_64;  COMPOSE_ARCH=x86_64  ;; \
+       esac \
+    # Docker CLI (just the client — no daemon).
+    && curl -sSfL \
+        "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-${DOCKER_VERSION}.tgz" \
+        -o /tmp/docker.tgz \
+    && tar -xzf /tmp/docker.tgz -C /tmp \
+    && install -m 0755 /tmp/docker/docker /usr/local/bin/docker \
+    && rm -rf /tmp/docker /tmp/docker.tgz \
+    # Compose v2 plugin.
+    && mkdir -p /usr/libexec/docker/cli-plugins \
+    && curl -sSfL \
+        "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-linux-${COMPOSE_ARCH}" \
+        -o /usr/libexec/docker/cli-plugins/docker-compose \
+    && chmod 0755 /usr/libexec/docker/cli-plugins/docker-compose
 
 # --- runtime stage ---------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
@@ -59,8 +96,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /config
 
+# The `docker` and `docker compose` CLIs are copied in from the
+# docker-install stage as standalone static binaries (saves ~250 MB over
+# the Debian docker.io package + its transitive deps). They only talk to
+# the host daemon via the mounted socket — no dockerd inside this image.
+
 COPY --from=build /out/patchpulse /usr/local/bin/patchpulse
 COPY --from=grype-install /usr/local/bin/grype /usr/local/bin/grype
+COPY --from=docker-install /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker-install /usr/libexec/docker/cli-plugins/docker-compose /usr/libexec/docker/cli-plugins/docker-compose
 
 WORKDIR /config
 

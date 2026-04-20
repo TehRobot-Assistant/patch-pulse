@@ -8,6 +8,11 @@
   · last seen {{agoT .LastSeenAt}}
 </div>
 
+{{if eq ($.Flash.updated) "ok"}}<div class="ok">Update completed.</div>{{end}}
+{{if eq ($.Flash.updated) "failed"}}<div class="error">Update failed — see output below.</div>{{end}}
+{{if eq ($.Flash.update_err) "confirm"}}<div class="error">Service name didn't match — update aborted.</div>{{end}}
+{{if eq ($.Flash.update_err) "nopath"}}<div class="error">No compose path configured for project <code>{{.ComposeProject}}</code>. Add it in Settings → Compose paths.</div>{{end}}
+
 <section class="card">
   <h2>Version</h2>
   <table class="kv">
@@ -73,5 +78,36 @@
     </table>
   {{end}}
 </section>
+
+{{if .ComposeProject}}
+<section class="card">
+  <h2>Update</h2>
+  {{if not .UpdateEnabled}}
+    <p class="muted">Update action is disabled. Enable it in <a href="/settings">Settings</a> if you want a one-click <code>docker compose pull && up -d</code> button here.</p>
+  {{else if not .UpdateEligible}}
+    <p class="muted">No compose file path recorded for project <code>{{.ComposeProject}}</code>. Add an entry in <a href="/settings">Settings → Compose paths</a> so this container can be updated from here.</p>
+  {{else}}
+    <p class="muted small">
+      Will run <code>docker compose -f {{.ComposePath}} pull {{.ComposeService}}</code> then
+      <code>docker compose -f {{.ComposePath}} up -d {{.ComposeService}}</code>.
+      Re-type the service name to confirm.
+    </p>
+    <form method="POST" action="/container/{{.ContainerID}}/update" class="stack">
+      <label>
+        <span class="small">Service name</span>
+        <input type="text" name="confirm" placeholder="{{.ComposeService}}" autocomplete="off" required>
+      </label>
+      <div><button type="submit">Update now</button></div>
+    </form>
+  {{end}}
+
+  {{if not .UpdateLastAt.IsZero}}
+  <details class="update-history">
+    <summary>Last run {{agoT .UpdateLastAt}} — {{if eq .UpdateLastResult "ok"}}<span class="chip chip-ok">ok</span>{{else}}<span class="chip chip-danger">{{.UpdateLastResult}}</span>{{end}}</summary>
+    <pre class="update-output">{{.UpdateLastOutput}}</pre>
+  </details>
+  {{end}}
+</section>
+{{end}}
 {{end}}
 {{end}}

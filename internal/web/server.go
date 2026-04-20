@@ -93,6 +93,7 @@ func (s *Server) Handler() http.Handler {
 	// Authenticated routes.
 	mux.HandleFunc("GET /{$}", s.handleDashboard)
 	mux.HandleFunc("GET /container/{id}", s.handleContainerDetail)
+	mux.HandleFunc("POST /container/{id}/update", s.handleContainerUpdate)
 	mux.HandleFunc("POST /check", s.handleForceCheck)
 	mux.HandleFunc("POST /logout", s.handleLogout)
 	mux.HandleFunc("GET /settings", s.handleSettingsGet)

@@ -13,8 +13,8 @@ import (
 const (
 	KeyPollCadenceHours  = "poll_cadence_hours"
 	KeyGitHubToken       = "github_token"
-	KeyAppriseURLs       = "apprise_urls"        // JSON array of strings
-	KeyComposePaths      = "compose_paths"       // JSON object: project → abs-path
+	KeyAppriseURLs       = "apprise_urls"  // JSON array of strings
+	KeyComposePaths      = "compose_paths" // JSON object: project → abs-path
 	KeyEnableUpdateAct   = "enable_update_action"
 	KeyNotifyOnNewCVE    = "notify_on_new_cve"
 	KeyNotifyDailyDigest = "notify_daily_digest"

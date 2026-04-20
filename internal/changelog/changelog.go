@@ -8,6 +8,7 @@
 package changelog
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,10 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
+	goldrenderer "github.com/yuin/goldmark/renderer/html"
 
 	hlsecweb "github.com/trstudios/patch-pulse/internal/secweb"
 )
@@ -188,16 +193,34 @@ func parseGitHubURL(sourceURL string) (owner, repo string, ok bool) {
 	return parts[0], parts[1], true
 }
 
-// markdownToSafeHTML converts Markdown text to sanitised HTML.
-// Since we don't want to pull a Markdown parser, we convert simple patterns
-// and run through bluemonday sanitiser. A proper Markdown renderer (e.g.,
-// goldmark) can be added later without changing the storage contract.
+// mdRenderer is the shared goldmark parser/renderer. GitHub Flavored
+// Markdown (GFM) enables tables, strikethrough, linkify, task lists —
+// everything a typical release notes document uses.
+var mdRenderer = goldmark.New(
+	goldmark.WithExtensions(extension.GFM),
+	goldmark.WithRendererOptions(
+		goldrenderer.WithHardWraps(),
+		// Intentionally NOT using WithUnsafe — we sanitise through
+		// bluemonday afterwards so any raw-HTML injection in the markdown
+		// would get filtered, but stopping it here earlier is cheap
+		// defence-in-depth.
+	),
+)
+
+// markdownToSafeHTML renders GFM markdown to sanitised HTML. Flow:
+//
+//  1. goldmark parses the markdown and emits HTML with GFM features
+//     (headings, links, lists, tables, code blocks, strikethrough).
+//  2. bluemonday (via secweb.SanitiseHTML) strips anything dangerous so
+//     even a malicious release-notes body can't run JS in the panel.
 func markdownToSafeHTML(md string) string {
-	// Treat the content as pre-formatted text wrapped in a <pre> block for safety.
-	// This is intentionally conservative for v0.1 — the raw text is readable and safe.
-	// A proper renderer is a v0.2 enhancement.
-	html := "<pre>" + htmlEscape(md) + "</pre>"
-	return hlsecweb.SanitiseHTML(html)
+	var buf bytes.Buffer
+	if err := mdRenderer.Convert([]byte(md), &buf); err != nil {
+		// Fallback: render as escaped plain text so the user still sees
+		// something if the parser trips on weird input.
+		return hlsecweb.SanitiseHTML("<pre>" + htmlEscape(md) + "</pre>")
+	}
+	return hlsecweb.SanitiseHTML(buf.String())
 }
 
 func htmlEscape(s string) string {

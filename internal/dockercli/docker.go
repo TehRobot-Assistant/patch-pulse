@@ -97,9 +97,9 @@ func (c *Client) ListRunning(ctx context.Context) ([]Container, error) {
 
 // apiImage is used when inspecting an image for its digest.
 type apiImage struct {
-	ID      string            `json:"Id"`
-	RepoDigests []string      `json:"RepoDigests"`
-	Labels  map[string]string `json:"Labels"` // Config.Labels
+	ID          string            `json:"Id"`
+	RepoDigests []string          `json:"RepoDigests"`
+	Labels      map[string]string `json:"Labels"` // Config.Labels
 }
 
 // InspectImage returns the image inspect result.

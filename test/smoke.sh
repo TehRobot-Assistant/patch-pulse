@@ -96,6 +96,10 @@ echo "==> 7d. Force check button renders on dashboard"
 BODY=$(curl -s -b "$COOKIE" "http://127.0.0.1:$PORT/")
 echo "$BODY" | grep -q 'Force check now' && pass "dashboard has Force check button" || fail "dashboard missing Force check button"
 
+echo "==> 7e. POST /container/.../update returns 403 when update action is disabled"
+CODE=$(curl -s -b "$COOKIE" -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/container/any-id/update")
+[ "$CODE" = "403" ] && pass "/container/any-id/update → 403 (disabled)" || fail "/container/any-id/update → $CODE (expected 403)"
+
 echo "==> 8. Logout clears session"
 curl -s -b "$COOKIE" -c "$COOKIE" -o /dev/null -X POST "http://127.0.0.1:$PORT/logout"
 

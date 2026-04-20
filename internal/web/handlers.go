@@ -11,6 +11,7 @@ import (
 	"github.com/trstudios/patch-pulse/internal/auth"
 	"github.com/trstudios/patch-pulse/internal/cve"
 	"github.com/trstudios/patch-pulse/internal/db"
+	"github.com/trstudios/patch-pulse/internal/update"
 )
 
 // --- /setup (first-run admin bootstrap) -----------------------------------
@@ -52,7 +53,7 @@ func (s *Server) handleSetupPost(w http.ResponseWriter, r *http.Request) {
 	user, err := auth.CreateAdmin(r.Context(), s.DB, username, password)
 	if err != nil {
 		s.renderPage(w, "PatchPulse — First-Run Setup", "setup-content",
-		map[string]any{"Error": err.Error(), "Username": username})
+			map[string]any{"Error": err.Error(), "Username": username})
 		return
 	}
 	// Auto-login the newly-created admin.
@@ -124,21 +125,21 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // --- / (dashboard) --------------------------------------------------------
 
 type dashboardRow struct {
-	ContainerID    string
-	Name           string
-	Image          string
-	Tag            string
-	CurrentDigest  string    // short form (first 12 chars after sha256:)
-	LatestDigest   string    // short form; empty if we haven't polled yet
+	ContainerID     string
+	Name            string
+	Image           string
+	Tag             string
+	CurrentDigest   string // short form (first 12 chars after sha256:)
+	LatestDigest    string // short form; empty if we haven't polled yet
 	LatestCheckedAt time.Time
-	Status         string    // "up-to-date" | "update" | "unknown"
-	CVECount       int       // -1 = not scanned yet
-	CriticalCVE    int
-	HighCVE        int
-	DiscoveredAt   time.Time
-	LastSeenAt     time.Time
-	ComposeProject string
-	ComposeService string
+	Status          string // "up-to-date" | "update" | "unknown"
+	CVECount        int    // -1 = not scanned yet
+	CriticalCVE     int
+	HighCVE         int
+	DiscoveredAt    time.Time
+	LastSeenAt      time.Time
+	ComposeProject  string
+	ComposeService  string
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
@@ -262,6 +263,105 @@ func (s *Server) handleForceCheck(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/?checked=1", http.StatusSeeOther)
 }
 
+// --- POST /container/{id}/update -----------------------------------------
+
+// handleContainerUpdate runs `docker compose pull && up -d <service>` for a
+// compose-managed container, gated on:
+//
+//  1. Global "Enable update action" setting.
+//  2. Compose path recorded for this project in settings.
+//  3. User re-types the service name as an intent confirmation.
+//
+// CSRF covered by SameSite=Strict (same as /check). The service-name match
+// is user-intent confirmation ("do you really want to update THIS"), not
+// cross-site mitigation.
+func (s *Server) handleContainerUpdate(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := r.PathValue("id")
+	if id == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if !db.SettingGetBool(ctx, s.DB, db.KeyEnableUpdateAct, false) {
+		http.Error(w, "update action disabled in Settings", http.StatusForbidden)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+
+	// Pull container meta — need service + project + current digest.
+	var name, project, service, currentDigest string
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT name, COALESCE(compose_project,''), COALESCE(compose_service,''),
+		       COALESCE(current_digest,'')
+		FROM containers WHERE container_id = ?`, id).Scan(&name, &project, &service, &currentDigest)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if project == "" || service == "" {
+		http.Error(w, "not a compose-managed container", http.StatusBadRequest)
+		return
+	}
+	// Belt-and-braces: reject hostile identifiers even though compose.Run
+	// also uses `--` to break out of flag parsing. The only way a hostile
+	// value lands here is via a malicious container's own labels — which
+	// already requires Docker socket access, but we gate anyway.
+	if !update.IsSafeIdentifier(project) || !update.IsSafeIdentifier(service) {
+		http.Error(w, "container labels contain unsafe characters", http.StatusBadRequest)
+		return
+	}
+	// Intent confirmation: user re-types the service name.
+	if strings.TrimSpace(r.FormValue("confirm")) != service {
+		http.Redirect(w, r, "/container/"+id+"?update_err=confirm", http.StatusSeeOther)
+		return
+	}
+
+	// Compose path for this project.
+	var paths map[string]string
+	_ = db.SettingGetJSON(ctx, s.DB, db.KeyComposePaths, &paths)
+	composePath := paths[project]
+	if composePath == "" {
+		http.Redirect(w, r, "/container/"+id+"?update_err=nopath", http.StatusSeeOther)
+		return
+	}
+	if !update.IsSafeComposePath(composePath) {
+		http.Error(w, "configured compose path is not a safe absolute path", http.StatusBadRequest)
+		return
+	}
+
+	// Detach the exec + audit from r.Context(). If the user closes their
+	// browser tab mid-update, we do NOT want docker compose to get SIGKILL
+	// halfway through a restart — that can leave the stack in a half-up
+	// state. Cap the wall clock at 10 minutes regardless.
+	runCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	runner := update.DefaultRunner()
+	res := runner.Run(runCtx, composePath, service)
+
+	result := "ok"
+	if res.Err != nil {
+		result = "failed"
+	}
+
+	var userID int64
+	if u := auth.UserFromContext(ctx); u != nil {
+		userID = u.ID
+	}
+	// Audit insert also uses a fresh context so a late-aborting request
+	// doesn't silently swallow the row.
+	auditCtx, auditCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer auditCancel()
+	_, _ = s.DB.ExecContext(auditCtx, `
+		INSERT INTO actions (container_id, user_id, action, from_digest, result, detail, created_at)
+		VALUES (?, ?, 'update', ?, ?, ?, ?)`,
+		id, userID, currentDigest, result, res.Output, time.Now().Unix())
+
+	http.Redirect(w, r, "/container/"+id+"?updated="+result, http.StatusSeeOther)
+}
+
 // registryBanner is a rate-limit or last-error card shown on the dashboard
 // with a remediation hint. Only loaded when the adapter actually has state
 // to surface — a clean table yields no banners.
@@ -337,6 +437,14 @@ type containerDetail struct {
 	ChangelogAt     time.Time
 	CVEs            []cve.CVE
 	CVEScannedAt    time.Time
+
+	// Update-action UI state.
+	UpdateEnabled    bool   // from Settings: "Enable update action"
+	UpdateEligible   bool   // container is compose-managed AND we have its compose path
+	ComposePath      string // resolved path for this project, if any
+	UpdateLastOutput string // last run's captured output (from actions table)
+	UpdateLastResult string // "ok" | "failed" | ""
+	UpdateLastAt     time.Time
 }
 
 func (s *Server) handleContainerDetail(w http.ResponseWriter, r *http.Request) {
@@ -388,6 +496,31 @@ func (s *Server) handleContainerDetail(w http.ResponseWriter, r *http.Request) {
 	d.CurrentDigest = shortDigest(currentDigestFull)
 	d.LatestDigest = shortDigest(latestFull)
 
+	// Update-action eligibility: setting enabled + compose-managed + we
+	// know the compose file path for this project.
+	d.UpdateEnabled = db.SettingGetBool(r.Context(), s.DB, db.KeyEnableUpdateAct, false)
+	if d.UpdateEnabled && d.ComposeProject != "" {
+		var paths map[string]string
+		_ = db.SettingGetJSON(r.Context(), s.DB, db.KeyComposePaths, &paths)
+		if p, ok := paths[d.ComposeProject]; ok && p != "" {
+			d.ComposePath = p
+			d.UpdateEligible = true
+		}
+	}
+
+	// Last update action for this container (most recent row in actions).
+	var outStr, resultStr string
+	var actAt int64
+	_ = s.DB.QueryRowContext(r.Context(), `
+		SELECT COALESCE(detail,''), COALESCE(result,''), created_at
+		FROM actions WHERE container_id = ? AND action = 'update'
+		ORDER BY created_at DESC LIMIT 1`, id).Scan(&outStr, &resultStr, &actAt)
+	d.UpdateLastOutput = outStr
+	d.UpdateLastResult = resultStr
+	if actAt > 0 {
+		d.UpdateLastAt = time.Unix(actAt, 0)
+	}
+
 	// Changelog cached by the poller (already sanitised HTML).
 	var changelogHTML, clSource string
 	var clAt int64
@@ -419,6 +552,10 @@ func (s *Server) handleContainerDetail(w http.ResponseWriter, r *http.Request) {
 	s.renderPage(w, "PatchPulse — "+d.Name, "container-content", map[string]any{
 		"User":      auth.UserFromContext(r.Context()),
 		"Container": d,
+		"Flash": map[string]string{
+			"updated":    r.URL.Query().Get("updated"),    // "ok" | "failed" | ""
+			"update_err": r.URL.Query().Get("update_err"), // "confirm" | "nopath" | ""
+		},
 	})
 }
 
@@ -437,6 +574,7 @@ type settingsForm struct {
 	PollCadenceHours   int
 	GitHubToken        string
 	AppriseURLs        []string
+	ComposePaths       map[string]string
 	EnableUpdateAction bool
 	NotifyOnNewCVE     bool
 	NotifyDailyDigest  bool
@@ -475,6 +613,28 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = db.SettingSetJSON(ctx, s.DB, db.KeyAppriseURLs, urls)
 
+	// Compose paths — one "project=/abs/path" per line. Empty project or
+	// path entries are dropped. Future: validate that the path exists
+	// inside the container before accepting.
+	paths := map[string]string{}
+	for _, line := range strings.Split(r.FormValue("compose_paths"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		eq := strings.IndexByte(line, '=')
+		if eq < 1 {
+			continue
+		}
+		project := strings.TrimSpace(line[:eq])
+		path := strings.TrimSpace(line[eq+1:])
+		if project == "" || path == "" {
+			continue
+		}
+		paths[project] = path
+	}
+	_ = db.SettingSetJSON(ctx, s.DB, db.KeyComposePaths, paths)
+
 	_ = db.SettingSet(ctx, s.DB, db.KeyEnableUpdateAct, boolStr(r.FormValue("enable_update_action") == "on"))
 	_ = db.SettingSet(ctx, s.DB, db.KeyNotifyOnNewCVE, boolStr(r.FormValue("notify_on_new_cve") == "on"))
 	_ = db.SettingSet(ctx, s.DB, db.KeyNotifyDailyDigest, boolStr(r.FormValue("notify_daily_digest") == "on"))
@@ -486,11 +646,17 @@ func (s *Server) loadSettings(r *http.Request) settingsForm {
 	ctx := r.Context()
 	var urls []string
 	_ = db.SettingGetJSON(ctx, s.DB, db.KeyAppriseURLs, &urls)
+	var paths map[string]string
+	_ = db.SettingGetJSON(ctx, s.DB, db.KeyComposePaths, &paths)
+	if paths == nil {
+		paths = map[string]string{}
+	}
 	token, _ := db.SettingGet(ctx, s.DB, db.KeyGitHubToken)
 	return settingsForm{
 		PollCadenceHours:   db.SettingGetInt(ctx, s.DB, db.KeyPollCadenceHours, 6),
 		GitHubToken:        token,
 		AppriseURLs:        urls,
+		ComposePaths:       paths,
 		EnableUpdateAction: db.SettingGetBool(ctx, s.DB, db.KeyEnableUpdateAct, false),
 		NotifyOnNewCVE:     db.SettingGetBool(ctx, s.DB, db.KeyNotifyOnNewCVE, true),
 		NotifyDailyDigest:  db.SettingGetBool(ctx, s.DB, db.KeyNotifyDailyDigest, true),
@@ -540,4 +706,3 @@ func boolStr(b bool) string {
 	}
 	return "false"
 }
-

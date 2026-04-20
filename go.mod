@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	github.com/microcosm-cc/bluemonday v1.0.27
+	github.com/yuin/goldmark v1.7.8
 	golang.org/x/crypto v0.28.0
 	modernc.org/sqlite v1.34.2
 )

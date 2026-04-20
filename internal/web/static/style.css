@@ -150,12 +150,36 @@ table.kv tr { border: 0; }
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 1rem;
-  max-height: 30rem;
+  padding: .75rem 1.25rem;
+  max-height: 32rem;
   overflow: auto;
-  font-size: .9rem;
+  font-size: .92rem;
+  line-height: 1.55;
 }
-.changelog pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, monospace; }
+.changelog h1, .changelog h2, .changelog h3 { font-size: 1rem; margin: 1em 0 .4em; }
+.changelog h1 { font-size: 1.1rem; }
+.changelog ul, .changelog ol { padding-left: 1.4rem; }
+.changelog li { margin: .15em 0; }
+.changelog pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: .6rem .8rem;
+  border-radius: 4px;
+  overflow: auto;
+  font-family: ui-monospace, monospace;
+  font-size: .85rem;
+}
+.changelog code { background: var(--bg); }
+.changelog a { color: var(--accent); }
+.changelog table { margin: .5em 0; }
+.changelog img { max-width: 100%; height: auto; }
+.changelog blockquote {
+  border-left: 3px solid var(--border);
+  margin: .5em 0;
+  padding: .1em 1em;
+  color: var(--muted);
+}
+.changelog hr { border: 0; border-top: 1px solid var(--border); margin: 1em 0; }
 
 /* Page header with an action button next to the h1. */
 .page-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.25rem; }
@@ -168,3 +192,21 @@ button.secondary {
   padding: .5rem .9rem;
 }
 button.secondary:hover { border-color: var(--accent); filter: none; }
+
+/* Update history <details> block on the detail page. */
+.update-history { margin-top: 1rem; }
+.update-history summary { cursor: pointer; color: var(--muted); font-size: .9rem; padding: .3rem 0; }
+.update-history summary:hover { color: var(--text); }
+.update-output {
+  margin-top: .5rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: .75rem 1rem;
+  font-family: ui-monospace, monospace;
+  font-size: .8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 24rem;
+  overflow: auto;
+}

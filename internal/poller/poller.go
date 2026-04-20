@@ -3,8 +3,8 @@
 // Three concurrent loops, all respect ctx:
 //
 //  1. Discovery (60s)            — list running containers, upsert rows,
-//                                   capture current image digest + OCI
-//                                   labels for each unique image:tag.
+//     capture current image digest + OCI
+//     labels for each unique image:tag.
 //  2. Upstream (poll_cadence_hours from settings, default 6h) — for every
 //     unique image:tag currently running, hit the correct registry
 //     adapter (Docker Hub / GHCR / Quay) to resolve the latest manifest
