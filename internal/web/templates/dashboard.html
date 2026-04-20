@@ -26,7 +26,7 @@
 {{end}}
 
 {{if not .Containers}}
-<div class="empty">No containers tracked yet.</div>
+<div class="empty">No containers tracked yet.{{if gt .IgnoredCount 0}} <a href="/ignored">{{.IgnoredCount}} ignored</a>.{{end}}</div>
 {{else}}
 <table class="containers">
   <thead>
@@ -76,5 +76,10 @@
   {{end}}
   </tbody>
 </table>
+{{if gt .IgnoredCount 0}}
+<p class="muted small" style="margin-top: 1rem;">
+  <a href="/ignored">{{.IgnoredCount}} container{{if ne .IgnoredCount 1}}s{{end}} ignored</a> — excluded from the dashboard, polling, and CVE scans.
+</p>
+{{end}}
 {{end}}
 {{end}}

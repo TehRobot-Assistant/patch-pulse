@@ -100,6 +100,14 @@ echo "==> 7e. POST /container/.../update returns 403 when update action is disab
 CODE=$(curl -s -b "$COOKIE" -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/container/any-id/update")
 [ "$CODE" = "403" ] && pass "/container/any-id/update → 403 (disabled)" || fail "/container/any-id/update → $CODE (expected 403)"
 
+echo "==> 7f. GET /ignored renders (authenticated)"
+BODY=$(curl -s -b "$COOKIE" "http://127.0.0.1:$PORT/ignored")
+echo "$BODY" | grep -q '>Ignored containers<' && pass "/ignored renders" || fail "/ignored missing heading"
+
+echo "==> 7g. POST /container/unknown/ignore redirects back to detail page"
+LOC=$(curl -s -b "$COOKIE" -o /dev/null -w '%{redirect_url}' -X POST "http://127.0.0.1:$PORT/container/unknown-id/ignore")
+[[ "$LOC" == *"/container/unknown-id" ]] && pass "/container/unknown/ignore → $LOC" || fail "/container/unknown/ignore → $LOC"
+
 echo "==> 8. Logout clears session"
 curl -s -b "$COOKIE" -c "$COOKIE" -o /dev/null -X POST "http://127.0.0.1:$PORT/logout"
 

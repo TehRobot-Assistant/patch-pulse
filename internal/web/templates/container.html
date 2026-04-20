@@ -1,7 +1,12 @@
 {{define "container-content"}}
 {{with .Container}}
 <p><a href="/">← Dashboard</a></p>
-<h1>{{.Name}}</h1>
+<div class="page-head">
+  <h1>{{.Name}}{{if .Ignored}} <span class="chip chip-muted">Ignored</span>{{end}}</h1>
+  <form method="POST" action="/container/{{.ContainerID}}/ignore" class="inline">
+    <button type="submit" class="secondary">{{if .Ignored}}Stop ignoring{{else}}Ignore{{end}}</button>
+  </form>
+</div>
 <div class="muted">
   <code>{{.Image}}:{{.Tag}}</code>
   · {{if .ComposeProject}}{{.ComposeProject}}/{{.ComposeService}}{{else}}docker run{{end}}

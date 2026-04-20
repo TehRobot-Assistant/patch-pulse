@@ -240,12 +240,18 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	// One-shot flash from /check redirect.
 	flashCheck := r.URL.Query().Get("checked") == "1"
 
+	// Count of ignored containers — powers the footer "Show N ignored" link.
+	var ignoredCount int
+	_ = s.DB.QueryRowContext(r.Context(),
+		`SELECT COUNT(*) FROM containers WHERE ignored = 1`).Scan(&ignoredCount)
+
 	s.renderPage(w, "PatchPulse — Dashboard", "dashboard-content", map[string]any{
 		"User":         user,
 		"Containers":   list,
 		"FirstRunHint": firstRunHint,
 		"Banners":      banners,
 		"FlashCheck":   flashCheck,
+		"IgnoredCount": ignoredCount,
 	})
 }
 
@@ -261,6 +267,69 @@ func (s *Server) handleForceCheck(w http.ResponseWriter, r *http.Request) {
 		s.Poller.TriggerCheck()
 	}
 	http.Redirect(w, r, "/?checked=1", http.StatusSeeOther)
+}
+
+// --- POST /container/{id}/ignore (toggle) -------------------------------
+
+// handleContainerIgnoreToggle flips containers.ignored. Ignored containers
+// are excluded from the dashboard, registry polling, and CVE scans — handy
+// for noisy images (build-time sidecars, short-lived jobs) whose "update
+// available" pings you don't care about. Idempotent toggle; redirects back
+// to the detail page so the user can toggle back from there.
+func (s *Server) handleContainerIgnoreToggle(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.NotFound(w, r)
+		return
+	}
+	ctx := r.Context()
+	_, err := s.DB.ExecContext(ctx,
+		`UPDATE containers SET ignored = CASE ignored WHEN 1 THEN 0 ELSE 1 END WHERE container_id = ?`, id)
+	if err != nil {
+		s.Logger.Warn("toggle ignore", "id", id, "err", err)
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	// If we just ignored it, the detail page still resolves but dashboard
+	// hides it. Send them back where they were.
+	http.Redirect(w, r, "/container/"+id, http.StatusSeeOther)
+}
+
+// --- GET /ignored ---------------------------------------------------------
+
+type ignoredRow struct {
+	ContainerID string
+	Name        string
+	Image       string
+	Tag         string
+	LastSeenAt  time.Time
+}
+
+// handleIgnoredList shows every ignored container with a one-click
+// un-ignore button. Intentionally bare — this is a "drawer" for hidden
+// items, not a second dashboard.
+func (s *Server) handleIgnoredList(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.DB.QueryContext(r.Context(), `
+		SELECT container_id, name, image, tag, last_seen_at
+		FROM containers WHERE ignored = 1 ORDER BY name`)
+	if err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	var list []ignoredRow
+	for rows.Next() {
+		var ir ignoredRow
+		var seen int64
+		if err := rows.Scan(&ir.ContainerID, &ir.Name, &ir.Image, &ir.Tag, &seen); err == nil {
+			ir.LastSeenAt = time.Unix(seen, 0)
+			list = append(list, ir)
+		}
+	}
+	s.renderPage(w, "Ignored containers — PatchPulse", "ignored-content", map[string]any{
+		"User":    auth.UserFromContext(r.Context()),
+		"Ignored": list,
+	})
 }
 
 // --- POST /container/{id}/update -----------------------------------------
@@ -431,6 +500,7 @@ type containerDetail struct {
 	LastSeenAt      time.Time
 	ComposeProject  string
 	ComposeService  string
+	Ignored         bool
 	Status          string
 	Changelog       template.HTML // pre-sanitised by the poller
 	ChangelogSource string
@@ -457,16 +527,18 @@ func (s *Server) handleContainerDetail(w http.ResponseWriter, r *http.Request) {
 	var d containerDetail
 	var discUnix, seenUnix int64
 	var currentDigestFull string
+	var ignoredInt int
 	err := s.DB.QueryRowContext(r.Context(), `
 		SELECT container_id, name, image, tag,
 		       COALESCE(current_digest, ''),
 		       COALESCE(compose_project, ''), COALESCE(compose_service, ''),
-		       discovered_at, last_seen_at
+		       ignored, discovered_at, last_seen_at
 		FROM containers WHERE container_id = ?`, id).Scan(
 		&d.ContainerID, &d.Name, &d.Image, &d.Tag,
 		&currentDigestFull, &d.ComposeProject, &d.ComposeService,
-		&discUnix, &seenUnix,
+		&ignoredInt, &discUnix, &seenUnix,
 	)
+	d.Ignored = ignoredInt == 1
 	if err != nil {
 		http.NotFound(w, r)
 		return

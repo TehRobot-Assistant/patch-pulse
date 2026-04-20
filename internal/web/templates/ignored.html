@@ -1,0 +1,36 @@
+{{define "ignored-content"}}
+<p><a href="/">← Dashboard</a></p>
+<h1>Ignored containers</h1>
+
+{{if not .Ignored}}
+<div class="empty">No containers are being ignored.</div>
+{{else}}
+<p class="muted small">These containers are hidden from the dashboard, the upstream poll, and CVE scans. Click Un-ignore to bring one back.</p>
+<table class="containers">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Image</th>
+      <th>Tag</th>
+      <th>Last seen</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Ignored}}
+    <tr>
+      <td><a href="/container/{{.ContainerID}}"><strong>{{.Name}}</strong></a></td>
+      <td><code>{{.Image}}</code></td>
+      <td>{{.Tag}}</td>
+      <td>{{agoT .LastSeenAt}}</td>
+      <td>
+        <form method="POST" action="/container/{{.ContainerID}}/ignore" class="inline">
+          <button type="submit" class="secondary">Un-ignore</button>
+        </form>
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{end}}
