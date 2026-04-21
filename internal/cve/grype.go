@@ -49,9 +49,20 @@ type grypeOutput struct {
 
 type grypeMatch struct {
 	Vulnerability struct {
-		ID       string `json:"id"`
-		Severity string `json:"severity"`
+		ID         string   `json:"id"`
+		Severity   string   `json:"severity"`
+		DataSource string   `json:"dataSource"`
+		URLs       []string `json:"urls"`
+		Fix        struct {
+			Versions []string `json:"versions"`
+			State    string   `json:"state"`
+		} `json:"fix"`
 	} `json:"vulnerability"`
+	Artifact struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+		Type    string `json:"type"`
+	} `json:"artifact"`
 }
 
 // Scan runs grype against the given image ref and returns parsed results.
@@ -99,8 +110,14 @@ func (s *Scanner) Scan(ctx context.Context, imageRef string) (*ScanResult, error
 
 // CVE is a single vulnerability entry from Grype output.
 type CVE struct {
-	ID       string
-	Severity string
+	ID             string
+	Severity       string
+	PackageName    string
+	PackageVersion string
+	PackageType    string
+	FixedVersion   string // first fix version if grype knows one, "" otherwise
+	FixState       string // "fixed" | "not-fixed" | "wont-fix" | "unknown" | ""
+	URL            string // canonical URL (prefers dataSource, falls back to first URLs entry)
 }
 
 // ParseCVEs extracts individual CVE entries from raw Grype JSON.
@@ -111,9 +128,23 @@ func ParseCVEs(rawJSON string) ([]CVE, error) {
 	}
 	cves := make([]CVE, 0, len(out.Matches))
 	for _, m := range out.Matches {
+		var fixed string
+		if len(m.Vulnerability.Fix.Versions) > 0 {
+			fixed = m.Vulnerability.Fix.Versions[0]
+		}
+		url := m.Vulnerability.DataSource
+		if url == "" && len(m.Vulnerability.URLs) > 0 {
+			url = m.Vulnerability.URLs[0]
+		}
 		cves = append(cves, CVE{
-			ID:       m.Vulnerability.ID,
-			Severity: m.Vulnerability.Severity,
+			ID:             m.Vulnerability.ID,
+			Severity:       m.Vulnerability.Severity,
+			PackageName:    m.Artifact.Name,
+			PackageVersion: m.Artifact.Version,
+			PackageType:    m.Artifact.Type,
+			FixedVersion:   fixed,
+			FixState:       m.Vulnerability.Fix.State,
+			URL:            url,
 		})
 	}
 	return cves, nil

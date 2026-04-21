@@ -181,17 +181,22 @@ table.kv tr { border: 0; }
 }
 .changelog hr { border: 0; border-top: 1px solid var(--border); margin: 1em 0; }
 
-/* Page header with an action button next to the h1. */
-.page-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.25rem; }
-.page-head h1 { margin: 0; }
+/* Page header with action buttons next to the h1. */
+.page-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
+.page-head h1 { margin: 0; margin-right: auto; }
 .page-head form.inline { margin: 0; }
-button.secondary {
+button.secondary, a.secondary.button {
   background: var(--surface-2);
   color: var(--text);
   border: 1px solid var(--border);
   padding: .5rem .9rem;
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
 }
-button.secondary:hover { border-color: var(--accent); filter: none; }
+button.secondary:hover, a.secondary.button:hover { border-color: var(--accent); filter: none; text-decoration: none; }
 
 /* Update history <details> block on the detail page. */
 .update-history { margin-top: 1rem; }

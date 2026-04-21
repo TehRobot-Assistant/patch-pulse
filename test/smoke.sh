@@ -104,6 +104,16 @@ echo "==> 7f. GET /ignored renders (authenticated)"
 BODY=$(curl -s -b "$COOKIE" "http://127.0.0.1:$PORT/ignored")
 echo "$BODY" | grep -q '>Ignored containers<' && pass "/ignored renders" || fail "/ignored missing heading"
 
+echo "==> 7h. GET /export/cves.csv returns CSV (header row present, even with no scans)"
+HDR=$(curl -s -b "$COOKIE" -D - -o "$TMP/cves.csv" "http://127.0.0.1:$PORT/export/cves.csv" | tr -d '\r')
+echo "$HDR" | grep -qi '^Content-Type: text/csv' && pass "/export/cves.csv Content-Type is text/csv" || fail "/export/cves.csv missing Content-Type"
+echo "$HDR" | grep -qi '^Content-Disposition: attachment' && pass "/export/cves.csv is download" || fail "/export/cves.csv not an attachment"
+head -1 "$TMP/cves.csv" | grep -q 'container_name,image,tag,compose_project,cve_id' && pass "CSV has header row" || fail "CSV header missing"
+
+echo "==> 7i. Export CVEs button renders on dashboard"
+BODY=$(curl -s -b "$COOKIE" "http://127.0.0.1:$PORT/")
+echo "$BODY" | grep -q 'Export CVEs' && pass "dashboard has Export CVEs link" || fail "dashboard missing Export CVEs link"
+
 echo "==> 7g. POST /container/unknown/ignore redirects back to detail page"
 LOC=$(curl -s -b "$COOKIE" -o /dev/null -w '%{redirect_url}' -X POST "http://127.0.0.1:$PORT/container/unknown-id/ignore")
 [[ "$LOC" == *"/container/unknown-id" ]] && pass "/container/unknown/ignore → $LOC" || fail "/container/unknown/ignore → $LOC"

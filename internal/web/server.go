@@ -96,6 +96,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /container/{id}/update", s.handleContainerUpdate)
 	mux.HandleFunc("POST /container/{id}/ignore", s.handleContainerIgnoreToggle)
 	mux.HandleFunc("GET /ignored", s.handleIgnoredList)
+	mux.HandleFunc("GET /export/cves.csv", s.handleCVEExport)
 	mux.HandleFunc("POST /check", s.handleForceCheck)
 	mux.HandleFunc("POST /logout", s.handleLogout)
 	mux.HandleFunc("GET /settings", s.handleSettingsGet)

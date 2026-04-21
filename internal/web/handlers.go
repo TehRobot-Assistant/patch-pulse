@@ -2,9 +2,11 @@ package web
 
 import (
 	"context"
+	"encoding/csv"
 	"errors"
 	"html/template"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -330,6 +332,96 @@ func (s *Server) handleIgnoredList(w http.ResponseWriter, r *http.Request) {
 		"User":    auth.UserFromContext(r.Context()),
 		"Ignored": list,
 	})
+}
+
+// --- GET /export/cves.csv -------------------------------------------------
+
+// handleCVEExport streams a CSV of every CVE across every non-ignored
+// container that currently has a cached Grype scan. One row per finding
+// (an image with N CVEs produces N rows). Containers without a scan yet
+// are omitted — there's nothing to report.
+//
+// This is a read-only audit endpoint; auth middleware already gates it.
+// Streamed via encoding/csv so even large fleets don't materialise the
+// whole export in memory before the first byte hits the wire.
+func (s *Server) handleCVEExport(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT c.name, c.image, c.tag, COALESCE(c.compose_project, ''),
+		       cv.raw_json, cv.scanned_at
+		FROM containers c
+		JOIN cve_results cv ON cv.image_digest = c.current_digest
+		WHERE c.ignored = 0
+		ORDER BY c.name`)
+	if err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	filename := "patchpulse-cves-" + time.Now().Format("2006-01-02") + ".csv"
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	w.Header().Set("Cache-Control", "no-store")
+
+	cw := csv.NewWriter(w)
+	_ = cw.Write([]string{
+		"container_name", "image", "tag", "compose_project",
+		"cve_id", "severity",
+		"package_name", "package_version", "package_type",
+		"fixed_version", "fix_state",
+		"cve_url", "scanned_at",
+	})
+
+	severityRank := map[string]int{
+		"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Negligible": 4,
+	}
+
+	for rows.Next() {
+		var name, image, tag, composeProject, rawJSON string
+		var scannedAt int64
+		if err := rows.Scan(&name, &image, &tag, &composeProject, &rawJSON, &scannedAt); err != nil {
+			continue
+		}
+		cves, err := cve.ParseCVEs(rawJSON)
+		if err != nil {
+			s.Logger.Warn("parse cves for export", "container", name, "err", err)
+			continue
+		}
+		// Stable within-container ordering: severity (critical first), then id.
+		sort.SliceStable(cves, func(i, j int) bool {
+			ri, ok := severityRank[cves[i].Severity]
+			if !ok {
+				ri = 99
+			}
+			rj, ok := severityRank[cves[j].Severity]
+			if !ok {
+				rj = 99
+			}
+			if ri != rj {
+				return ri < rj
+			}
+			return cves[i].ID < cves[j].ID
+		})
+		scannedISO := time.Unix(scannedAt, 0).UTC().Format(time.RFC3339)
+		for _, c := range cves {
+			_ = cw.Write([]string{
+				name, image, tag, composeProject,
+				c.ID, c.Severity,
+				c.PackageName, c.PackageVersion, c.PackageType,
+				c.FixedVersion, c.FixState,
+				c.URL, scannedISO,
+			})
+		}
+		// Flush per-container so the client starts receiving bytes early
+		// on large exports. csv.Writer buffers internally; this nudges it.
+		cw.Flush()
+		if err := cw.Error(); err != nil {
+			s.Logger.Warn("csv export write failed", "err", err)
+			return
+		}
+	}
+	cw.Flush()
 }
 
 // --- POST /container/{id}/update -----------------------------------------
