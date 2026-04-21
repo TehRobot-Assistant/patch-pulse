@@ -64,7 +64,10 @@
   {{else if not .CVEs}}
     <p><span class="chip chip-ok">0 known CVEs</span> · scanned {{agoT .CVEScannedAt}}</p>
   {{else}}
-    <p class="muted small">Scanned {{agoT .CVEScannedAt}} · {{len .CVEs}} total</p>
+    <p class="muted small">
+      Scanned {{agoT .CVEScannedAt}} · {{len .CVEs}} total ·
+      <a href="/container/{{.ContainerID}}/cves.csv" download>Export CSV</a>
+    </p>
     <table class="cves">
       <thead><tr><th>CVE</th><th>Severity</th></tr></thead>
       <tbody>

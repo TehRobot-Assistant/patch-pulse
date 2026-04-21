@@ -110,6 +110,11 @@ echo "$HDR" | grep -qi '^Content-Type: text/csv' && pass "/export/cves.csv Conte
 echo "$HDR" | grep -qi '^Content-Disposition: attachment' && pass "/export/cves.csv is download" || fail "/export/cves.csv not an attachment"
 head -1 "$TMP/cves.csv" | grep -q 'container_name,image,tag,compose_project,cve_id' && pass "CSV has header row" || fail "CSV header missing"
 
+echo "==> 7h2. GET /container/{id}/cves.csv returns CSV (even with no scan data)"
+HDR=$(curl -s -b "$COOKIE" -D - -o "$TMP/one-cves.csv" "http://127.0.0.1:$PORT/container/any-id/cves.csv" | tr -d '\r')
+echo "$HDR" | grep -qi '^Content-Type: text/csv' && pass "/container/.../cves.csv Content-Type is text/csv" || fail "/container/.../cves.csv missing Content-Type"
+head -1 "$TMP/one-cves.csv" | grep -q 'container_name,image,tag,compose_project,cve_id' && pass "per-container CSV has header row" || fail "per-container CSV header missing"
+
 echo "==> 7i. Export CVEs button renders on dashboard"
 BODY=$(curl -s -b "$COOKIE" "http://127.0.0.1:$PORT/")
 echo "$BODY" | grep -q 'Export CVEs' && pass "dashboard has Export CVEs link" || fail "dashboard missing Export CVEs link"

@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"database/sql"
 	"encoding/csv"
 	"errors"
 	"html/template"
@@ -334,48 +335,34 @@ func (s *Server) handleIgnoredList(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// --- GET /export/cves.csv -------------------------------------------------
+// --- GET /export/cves.csv + /container/{id}/cves.csv ---------------------
 
-// handleCVEExport streams a CSV of every CVE across every non-ignored
-// container that currently has a cached Grype scan. One row per finding
-// (an image with N CVEs produces N rows). Containers without a scan yet
-// are omitted — there's nothing to report.
-//
-// This is a read-only audit endpoint; auth middleware already gates it.
-// Streamed via encoding/csv so even large fleets don't materialise the
-// whole export in memory before the first byte hits the wire.
-func (s *Server) handleCVEExport(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	rows, err := s.DB.QueryContext(ctx, `
-		SELECT c.name, c.image, c.tag, COALESCE(c.compose_project, ''),
-		       cv.raw_json, cv.scanned_at
-		FROM containers c
-		JOIN cve_results cv ON cv.image_digest = c.current_digest
-		WHERE c.ignored = 0
-		ORDER BY c.name`)
-	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
+// cveCSVColumns is the stable column order for both fleet and
+// per-container exports. Don't reorder without considering consumers
+// that pattern-match on column index (e.g. spreadsheets).
+var cveCSVColumns = []string{
+	"container_name", "image", "tag", "compose_project",
+	"cve_id", "severity",
+	"package_name", "package_version", "package_type",
+	"fixed_version", "fix_state",
+	"cve_url", "scanned_at",
+}
 
-	filename := "patchpulse-cves-" + time.Now().Format("2006-01-02") + ".csv"
+var severityRank = map[string]int{
+	"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Negligible": 4,
+}
+
+// writeCVECSV is the shared streamer for both export endpoints. Caller
+// supplies the query cursor (already filtered to the right containers)
+// and the CSV is flushed per-container so large exports start delivering
+// bytes before the whole result set materialises.
+func (s *Server) writeCVECSV(w http.ResponseWriter, filename string, rows *sql.Rows) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 	w.Header().Set("Cache-Control", "no-store")
 
 	cw := csv.NewWriter(w)
-	_ = cw.Write([]string{
-		"container_name", "image", "tag", "compose_project",
-		"cve_id", "severity",
-		"package_name", "package_version", "package_type",
-		"fixed_version", "fix_state",
-		"cve_url", "scanned_at",
-	})
-
-	severityRank := map[string]int{
-		"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Negligible": 4,
-	}
+	_ = cw.Write(cveCSVColumns)
 
 	for rows.Next() {
 		var name, image, tag, composeProject, rawJSON string
@@ -413,8 +400,6 @@ func (s *Server) handleCVEExport(w http.ResponseWriter, r *http.Request) {
 				c.URL, scannedISO,
 			})
 		}
-		// Flush per-container so the client starts receiving bytes early
-		// on large exports. csv.Writer buffers internally; this nudges it.
 		cw.Flush()
 		if err := cw.Error(); err != nil {
 			s.Logger.Warn("csv export write failed", "err", err)
@@ -422,6 +407,54 @@ func (s *Server) handleCVEExport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	cw.Flush()
+}
+
+// handleCVEExport streams a CSV of every CVE across every non-ignored
+// container that currently has a cached Grype scan. One row per finding
+// (an image with N CVEs produces N rows). Containers without a scan yet
+// are omitted — there's nothing to report.
+//
+// This is a read-only audit endpoint; auth middleware already gates it.
+func (s *Server) handleCVEExport(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.DB.QueryContext(r.Context(), `
+		SELECT c.name, c.image, c.tag, COALESCE(c.compose_project, ''),
+		       cv.raw_json, cv.scanned_at
+		FROM containers c
+		JOIN cve_results cv ON cv.image_digest = c.current_digest
+		WHERE c.ignored = 0
+		ORDER BY c.name`)
+	if err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	s.writeCVECSV(w, "patchpulse-cves-"+time.Now().Format("2006-01-02")+".csv", rows)
+}
+
+// handleContainerCVEExport streams the CSV for just the requested
+// container. Rare to have > a few hundred rows here — no paging, full
+// export in one shot.
+func (s *Server) handleContainerCVEExport(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.NotFound(w, r)
+		return
+	}
+	rows, err := s.DB.QueryContext(r.Context(), `
+		SELECT c.name, c.image, c.tag, COALESCE(c.compose_project, ''),
+		       cv.raw_json, cv.scanned_at
+		FROM containers c
+		JOIN cve_results cv ON cv.image_digest = c.current_digest
+		WHERE c.container_id = ?`, id)
+	if err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	// Filename uses the container_id (already sanitised — 12-char hex)
+	// plus the date. Using c.name in the filename risks spaces/slashes
+	// and a header-injection surface; id is safer.
+	s.writeCVECSV(w, "patchpulse-cves-"+id+"-"+time.Now().Format("2006-01-02")+".csv", rows)
 }
 
 // --- POST /container/{id}/update -----------------------------------------
