@@ -5,6 +5,14 @@
     <button type="submit" class="secondary">Force check now</button>
   </form>
   <a class="secondary button" href="/export/cves.csv" download>Export CVEs (CSV)</a>
+  <span class="last-checked muted small"
+        {{if .LastCheckedUnix}}data-last-checked-unix="{{.LastCheckedUnix}}"{{end}}>
+    {{if .LastChecked.IsZero}}
+      Last checked: never
+    {{else}}
+      Last checked: <span class="js-last-checked">{{agoT .LastChecked}}</span>
+    {{end}}
+  </span>
 </div>
 
 {{if .FlashCheck}}
@@ -29,25 +37,25 @@
 {{if not .Containers}}
 <div class="empty">No containers tracked yet.{{if gt .IgnoredCount 0}} <a href="/ignored">{{.IgnoredCount}} ignored</a>.{{end}}</div>
 {{else}}
-<table class="containers">
+<table class="containers sortable">
   <thead>
     <tr>
-      <th>Name</th>
-      <th>Image</th>
-      <th>Tag</th>
-      <th>Status</th>
-      <th>CVEs</th>
-      <th>Stack</th>
-      <th>Last seen</th>
+      <th data-sort="string">Name</th>
+      <th data-sort="string">Image</th>
+      <th data-sort="string">Tag</th>
+      <th data-sort="string">Status</th>
+      <th data-sort="number">CVEs</th>
+      <th data-sort="string">Stack</th>
+      <th data-sort="number">Last seen</th>
     </tr>
   </thead>
   <tbody>
   {{range .Containers}}
     <tr>
-      <td><a href="/container/{{.ContainerID}}"><strong>{{.Name}}</strong></a></td>
-      <td><code>{{.Image}}</code></td>
-      <td>{{.Tag}}</td>
-      <td>
+      <td data-sort-value="{{.Name}}"><a href="/container/{{.ContainerID}}"><strong>{{.Name}}</strong></a></td>
+      <td data-sort-value="{{.Image}}"><code>{{.Image}}</code></td>
+      <td data-sort-value="{{.Tag}}">{{.Tag}}</td>
+      <td data-sort-value="{{.Status}}">
         {{if eq .Status "update"}}
           <span class="chip chip-warn">Update available</span>
           <div class="muted small">{{.CurrentDigest}} → {{.LatestDigest}}</div>
@@ -58,7 +66,7 @@
           <div class="muted small">{{if .LatestCheckedAt.IsZero}}not yet checked{{else}}checked {{agoT .LatestCheckedAt}}{{end}}</div>
         {{end}}
       </td>
-      <td>
+      <td data-sort-value="{{.CVECount}}">
         {{if lt .CVECount 0}}
           <span class="muted">—</span>
         {{else if eq .CVECount 0}}
@@ -71,8 +79,8 @@
           <span class="chip chip-muted">{{.CVECount}}</span>
         {{end}}
       </td>
-      <td>{{if .ComposeProject}}{{.ComposeProject}}/{{.ComposeService}}{{else}}<span class="muted">docker run</span>{{end}}</td>
-      <td>{{agoT .LastSeenAt}}</td>
+      <td data-sort-value="{{if .ComposeProject}}{{.ComposeProject}}{{else}}~{{end}}">{{if .ComposeProject}}{{.ComposeProject}}/{{.ComposeService}}{{else}}<span class="muted">docker run</span>{{end}}</td>
+      <td data-sort-value="{{.LastSeenAt.Unix}}">{{agoT .LastSeenAt}}</td>
     </tr>
   {{end}}
   </tbody>
@@ -83,4 +91,6 @@
 </p>
 {{end}}
 {{end}}
+
+<script src="/static/dashboard.js" defer></script>
 {{end}}

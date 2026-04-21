@@ -110,14 +110,24 @@ echo "$HDR" | grep -qi '^Content-Type: text/csv' && pass "/export/cves.csv Conte
 echo "$HDR" | grep -qi '^Content-Disposition: attachment' && pass "/export/cves.csv is download" || fail "/export/cves.csv not an attachment"
 head -1 "$TMP/cves.csv" | grep -q 'container_name,image,tag,compose_project,cve_id' && pass "CSV has header row" || fail "CSV header missing"
 
-echo "==> 7h2. GET /container/{id}/cves.csv returns CSV (even with no scan data)"
-HDR=$(curl -s -b "$COOKIE" -D - -o "$TMP/one-cves.csv" "http://127.0.0.1:$PORT/container/any-id/cves.csv" | tr -d '\r')
-echo "$HDR" | grep -qi '^Content-Type: text/csv' && pass "/container/.../cves.csv Content-Type is text/csv" || fail "/container/.../cves.csv missing Content-Type"
-head -1 "$TMP/one-cves.csv" | grep -q 'container_name,image,tag,compose_project,cve_id' && pass "per-container CSV has header row" || fail "per-container CSV header missing"
+echo "==> 7h2. GET /container/{id}/cves.csv on an unknown id returns 404"
+CODE=$(curl -s -b "$COOKIE" -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/container/unknown-id/cves.csv")
+[ "$CODE" = "404" ] && pass "/container/unknown-id/cves.csv → 404" || fail "/container/unknown-id/cves.csv → $CODE (expected 404)"
 
 echo "==> 7i. Export CVEs button renders on dashboard"
 BODY=$(curl -s -b "$COOKIE" "http://127.0.0.1:$PORT/")
 echo "$BODY" | grep -q 'Export CVEs' && pass "dashboard has Export CVEs link" || fail "dashboard missing Export CVEs link"
+
+echo "==> 7j. Last-checked pill renders on dashboard"
+echo "$BODY" | grep -q 'Last checked' && pass "dashboard has Last checked timer" || fail "dashboard missing Last checked timer"
+
+echo "==> 7k. dashboard.js is served"
+CODE=$(curl -s -b "$COOKIE" -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/static/dashboard.js")
+[ "$CODE" = "200" ] && pass "/static/dashboard.js → 200" || fail "/static/dashboard.js → $CODE"
+
+echo "==> 7l. Fleet export filename follows new convention"
+HDR=$(curl -s -b "$COOKIE" -D - -o /dev/null "http://127.0.0.1:$PORT/export/cves.csv" | tr -d '\r')
+echo "$HDR" | grep -Eqi 'Content-Disposition:.*fleet\.patch-pulse-export\.' && pass "fleet filename = fleet.patch-pulse-export.<date>.csv" || fail "fleet filename not matching new convention: $HDR"
 
 echo "==> 7g. POST /container/unknown/ignore redirects back to detail page"
 LOC=$(curl -s -b "$COOKIE" -o /dev/null -w '%{redirect_url}' -X POST "http://127.0.0.1:$PORT/container/unknown-id/ignore")

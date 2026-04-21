@@ -248,13 +248,26 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	_ = s.DB.QueryRowContext(r.Context(),
 		`SELECT COUNT(*) FROM containers WHERE ignored = 1`).Scan(&ignoredCount)
 
+	// Last upstream check across any image — max(checked_at) from
+	// upstream_versions. Drives the "last checked X ago" pill + the
+	// client-side live timer.
+	var lastCheckedUnix int64
+	_ = s.DB.QueryRowContext(r.Context(),
+		`SELECT COALESCE(MAX(checked_at), 0) FROM upstream_versions`).Scan(&lastCheckedUnix)
+	var lastChecked time.Time
+	if lastCheckedUnix > 0 {
+		lastChecked = time.Unix(lastCheckedUnix, 0)
+	}
+
 	s.renderPage(w, "PatchPulse — Dashboard", "dashboard-content", map[string]any{
-		"User":         user,
-		"Containers":   list,
-		"FirstRunHint": firstRunHint,
-		"Banners":      banners,
-		"FlashCheck":   flashCheck,
-		"IgnoredCount": ignoredCount,
+		"User":            user,
+		"Containers":      list,
+		"FirstRunHint":    firstRunHint,
+		"Banners":         banners,
+		"FlashCheck":      flashCheck,
+		"IgnoredCount":    ignoredCount,
+		"LastChecked":     lastChecked,
+		"LastCheckedUnix": lastCheckedUnix,
 	})
 }
 
@@ -428,7 +441,7 @@ func (s *Server) handleCVEExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	s.writeCVECSV(w, "patchpulse-cves-"+time.Now().Format("2006-01-02")+".csv", rows)
+	s.writeCVECSV(w, "fleet.patch-pulse-export."+time.Now().Format("2006-01-02")+".csv", rows)
 }
 
 // handleContainerCVEExport streams the CSV for just the requested
@@ -440,6 +453,21 @@ func (s *Server) handleContainerCVEExport(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	}
+	// Look up the container name for the filename. The row itself is
+	// also the existence check — if the container_id doesn't exist we
+	// 404 rather than serve an empty CSV under a bogus filename.
+	var cname string
+	err := s.DB.QueryRowContext(r.Context(),
+		`SELECT name FROM containers WHERE container_id = ?`, id).Scan(&cname)
+	if err == sql.ErrNoRows {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+
 	rows, err := s.DB.QueryContext(r.Context(), `
 		SELECT c.name, c.image, c.tag, COALESCE(c.compose_project, ''),
 		       cv.raw_json, cv.scanned_at
@@ -451,10 +479,34 @@ func (s *Server) handleContainerCVEExport(w http.ResponseWriter, r *http.Request
 		return
 	}
 	defer rows.Close()
-	// Filename uses the container_id (already sanitised — 12-char hex)
-	// plus the date. Using c.name in the filename risks spaces/slashes
-	// and a header-injection surface; id is safer.
-	s.writeCVECSV(w, "patchpulse-cves-"+id+"-"+time.Now().Format("2006-01-02")+".csv", rows)
+
+	s.writeCVECSV(w,
+		sanitiseFilenamePart(cname)+".patch-pulse-export."+time.Now().Format("2006-01-02")+".csv",
+		rows)
+}
+
+// sanitiseFilenamePart makes an arbitrary string safe to embed in a
+// Content-Disposition filename. Keeps letters/digits/dot/hyphen/
+// underscore and replaces everything else with a hyphen. Prevents
+// header-injection (CRLF) and filesystem-hostile chars (slashes) from
+// leaking in via container names. Empty input returns "container".
+func sanitiseFilenamePart(s string) string {
+	if s == "" {
+		return "container"
+	}
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+			out = append(out, c)
+		case c == '.' || c == '-' || c == '_':
+			out = append(out, c)
+		default:
+			out = append(out, '-')
+		}
+	}
+	return string(out)
 }
 
 // --- POST /container/{id}/update -----------------------------------------

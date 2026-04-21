@@ -185,6 +185,14 @@ table.kv tr { border: 0; }
 .page-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
 .page-head h1 { margin: 0; margin-right: auto; }
 .page-head form.inline { margin: 0; }
+.last-checked { padding-left: .25rem; }
+
+/* Sortable-table affordance: header text looks clickable + shows direction
+   when sorted. Purely visual; behaviour lives in dashboard.js. */
+table.sortable th.sort-clickable { cursor: pointer; user-select: none; }
+table.sortable th.sort-clickable:hover { color: var(--accent); }
+table.sortable th[aria-sort="ascending"]::after { content: " ↑"; color: var(--accent); }
+table.sortable th[aria-sort="descending"]::after { content: " ↓"; color: var(--accent); }
 button.secondary, a.secondary.button {
   background: var(--surface-2);
   color: var(--text);
